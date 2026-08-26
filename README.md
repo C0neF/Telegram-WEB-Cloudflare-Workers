@@ -2,7 +2,7 @@
 
 > 基于 **Cloudflare Workers Free + SQLite Durable Objects** 的个人自用 Telegram WEB Proxy — 零服务器成本，无需 VPS/容器，WebSocket 多路复用 + MTProxy 透传 + 有界流控。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![English](https://img.shields.io/badge/English-README_EN-blue.svg)](README_EN.md)
 [![Workers](https://img.shields.io/badge/Cloudflare-Workers%20Free-orange)](https://developers.cloudflare.com/workers/)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-green)](https://nodejs.org)
 [![Tests](https://img.shields.io/badge/tests-26%20app%20%2B%2025%20validation-brightgreen)](#验证)
@@ -19,35 +19,10 @@
 
 ---
 
-## 一键部署
-
-> **必须先 Fork**：`Deploy` 按钮不会直接在他人账户下新建 `Telegram-WEB-Cloudflare-Workers`，**只有 Fork 后才会使用你的 Fork 创建 Worker**。未 Fork 直接点按钮，Cloudflare 会在你的账户下新建 `你的用户名/Telegram-WEB-Cloudflare-Workers`（非 Fork），不符合预期。
-
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers)
-
-> **正确流程**：
-> 1. 右上 `Fork` → 得到 `你的用户名/Telegram-WEB-Cloudflare-Workers`（已 Fork 则跳过）
-> 2. 再点上方 `Deploy` 按钮 → Cloudflare 检测到已 Fork，直接使用 `你的用户名/Telegram-WEB-Cloudflare-Workers` 部署，**不会在 `C0neF` 或他人账户下创建新项目**
-> 3. 若未 Fork 点按钮，会先帮你 Fork（在你的账户下创建 `你的用户名/Telegram-WEB-Cloudflare-Workers`）再部署
-
-| 快捷入口 | 链接 |
-|---|---|
-| Cloudflare 控制台 | [dash.cloudflare.com](https://dash.cloudflare.com/) |
-| Workers & Pages 列表 | [dash.cloudflare.com → Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages) |
-| 创建 Worker | [Create Worker / Deploy](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create) |
-| 绑定自定义域名 | [Workers → Settings → Triggers](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) |
-| Wrangler 文档 | [developers.cloudflare.com/workers/wrangler](https://developers.cloudflare.com/workers/wrangler/) |
-
-**English version:** [README_EN.md](README_EN.md)
-
-> **⚠️ 请先阅读免责声明与 Cloudflare 风险提示后再部署** — 详见顶部黄条与文末 [免责声明](#免责声明)。Cloudflare 免费套餐对代理用途存在限流/封禁风险，**务必谨慎使用、仅个人自用、勿公开分享商用**。
-
 ## 目录
 
 - [特性](#特性)
-- [架构](#架构)
-- [成本说明](#成本说明)
-- [部署教程（详细）](#部署教程详细) — 一键部署 / Wrangler / 控制台手动
+- [部署教程](#部署教程) — 一键部署 / Wrangler / 控制台手动
 - [配置说明](#配置说明)
 - [在 Telegram Desktop 中使用](#在-telegram-desktop-中使用)
 - [本地开发与验证](#本地开发与验证)
@@ -76,61 +51,11 @@
 
 ---
 
-## 架构
+## 部署教程
 
-```
-Telegram Desktop / Android (WEB Proxy v1)
-        │  HTTPS / WSS   wss://proxy.example.com/api/v1/ws   tproxy-v1.<token>
-        ▼
-  Cloudflare Worker  ── 能力验证 HMAC + 桥接页 (bridge page)
-        │
-        ▼
-  Relay Durable Object (SQLite)  单例: personal-telegram-relay-v1
-        │  WEB Proxy 会话 │ 多逻辑流复用
-        │  MTProxy 外层解密 → 直连 Telegram 混淆重加密 (流式 AES-256-CTR)
-        │
-        ├──► pluto.web.telegram.org /apiws  (DC1)
-        ├──► venus.web.telegram.org /apiws  (DC2)
-        ├──► aurora.web.telegram.org /apiws (DC3)
-        ├──► vesta.web.telegram.org /apiws  (DC4)
-        └──► flora.web.telegram.org /apiws  (DC5)   Sec-WebSocket-Protocol: binary
-```
-
-- **Worker** 负责路由、能力校验、bootstrap/session 令牌、WSS 升级
-- **RelayDO** 负责长连接状态（窗口、CTR 密码状态、tombstone）与出站 Telegram WSS
-
-单 DO 计费：`0.128 GB × 86 400 s = 11 059 GB-s/天` → 占 Free 额度 `13 000` 的 **85%**，剩余可容纳第二个 128 MB Actor 约 **4.2 小时/天**。
-
----
-
-## 成本说明
-
-| 资源 | Free 额度 | 本项目（单活跃 DO） |
-|---|---|---|
-| Workers 请求 | 100k / 天 | 载体批 2 MiB 时 100 Mbps ≈ 25k 计费/天；若每 64 KiB 单独发则 ≈ 824k — **务必批处理** |
-| Durable Objects 请求 | 100k / 天 | WebSocket 应用消息 20:1 折算，仅入站计费 |
-| Durable Objects 时长 | 13k GB-s / 天 | 单 128 MB DO 全天 = 11.06k（85%） |
-| 出口/存储 | 个人量可忽略 | 不持久化对象，日志仅含哈希 |
-
-> 热路径：让载体消息尽量接近 2 MiB，避免把每个 64 KiB DATA 单独刷为一条 WS 消息。
-
----
-
-## 部署教程（详细）
-
-### 前置条件
-
-- 一个 **Cloudflare 免费账户** — [注册](https://dash.cloudflare.com/sign-up)（仅需邮箱）
-- Node.js ≥ 18（仅 Wrangler 方式需要）
-- 一个域名（可选，用于 `proxy.example.com`；直接用 `workers.dev` 也可，成本仍为 0）
-
-### 步骤 0 — 获取代码 & 生成密钥
+### 步骤 0 — 生成密钥
 
 ```bash
-# 克隆仓库
-git clone https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers.git telegram-web-proxy
-cd telegram-web-proxy
-
 # 生成 16 字节随机密钥（32 位 hex）
 node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
 # 示例输出: 000102030405060708090a0b0c0d0e0f
@@ -143,11 +68,8 @@ node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
 
 ### 方式一：一键部署（最快，推荐新手）
 
-1. 将仓库 Fork 到你自己的 GitHub
-   - **已 Fork → 不要再创建**：`dash.cloudflare.com → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork（`你的用户名/Telegram-WEB-Cloudflare-Workers`）` → `项目名称 Telegram-WEB-Cloudflare-Workers` → `路径 /` → `部署命令 npx wrangler deploy` → `PROXY_SECRET` 加密 → 部署。**此路径直接使用已 Fork 的库，不会新建**（已按需求修复：已 Fork 不再创建）。
-   - **未 Fork → 自动帮 Fork**：点击顶部的部署按钮 `https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers`，Cloudflare 会在**你的账户**下自动 Fork/新建 `你的用户名/Telegram-WEB-Cloudflare-Workers` 再部署；或先手动 Fork 再按上一条直连。亦可直接访问 [deploy.workers.cloudflare.com](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers) 粘贴地址
-   > **作者自测注意**：作者本人点自己仓库的按钮会在 `C0neF` 账户下新建 `Telegram-WEB-Cloudflare-Workers*` 重复库，已清理；作者请用 `npx wrangler deploy` 或 `连接 Git` 方式自测。
-3. 按页面提示用 GitHub 登录并授权 Cloudflare
+1. **先 Fork 再部署**：将仓库 Fork 到你自己的 GitHub（右上 Fork → `你的用户名/Telegram-WEB-Cloudflare-Workers`），然后 `dash.cloudflare.com → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork` → `项目名称 Telegram-WEB-Cloudflare-Workers` → `路径 /` → `部署命令 npx wrangler deploy` → `PROXY_SECRET` 加密 → 部署
+2. 按页面提示用 GitHub 登录并授权 Cloudflare
 4. 在 **Configure** 页找到 **Secrets** 区域，添加变量：
    - `PROXY_SECRET` = 上一步生成的 32 位 hex（或 `dd`+32 位）
 5. 点击 **Deploy**，等待约 30 秒
@@ -417,8 +339,3 @@ A: 依次检查：`PROXY_SECRET` 是否一致（含 `dd`）、`host` 是否规�
 
 MIT — 见 [LICENSE](LICENSE)
 
----
-
-## English
-
-For English documentation, see [README_EN.md](README_EN.md).
