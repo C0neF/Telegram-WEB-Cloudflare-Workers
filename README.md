@@ -21,7 +21,14 @@
 
 ## 一键部署
 
+> **必须先 Fork**：`Deploy` 按钮不会直接在他人账户下新建 `telegram-web-proxy`，**只有 Fork 后才会使用你的 Fork 创建 Worker**。未 Fork 直接点按钮，Cloudflare 会在你的账户下新建 `你的用户名/telegram-web-proxy`（非 Fork），不符合预期。
+
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers)
+
+> **正确流程**：
+> 1. 右上 `Fork` → 得到 `你的用户名/Telegram-WEB-Cloudflare-Workers`（已 Fork 则跳过）
+> 2. 再点上方 `Deploy` 按钮 → Cloudflare 检测到已 Fork，直接使用 `你的用户名/Telegram-WEB-Cloudflare-Workers` 部署，**不会在 `C0neF` 或他人账户下创建新项目**
+> 3. 若未 Fork 点按钮，会先帮你 Fork（在你的账户下创建 `你的用户名/Telegram-WEB-Cloudflare-Workers`）再部署
 
 | 快捷入口 | 链接 |
 |---|---|
