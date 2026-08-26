@@ -55,6 +55,14 @@ tail.log
 .commandcode/
 tmp/
 
+# Graph (user requested: never submit graph files)
+*graph*
+**/*graph*
+**/*graph*.*
+*.graph
+graph/
+**/graph/
+
 # --- Docs: keep only root README, ignore other markdown (local only) ---
 # All markdown except top-level README are local-only and not pushed to GitHub
 **/*.md
