@@ -7,8 +7,6 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D18-green)](https://nodejs.org)
 [![Tests](https://img.shields.io/badge/tests-26%20app%20%2B%2025%20validation-brightgreen)](#验证)
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create)
-
 上游基线：[`telegramdesktop/tproxy-server@52a5feb7`](https://github.com/telegramdesktop/tproxy-server/tree/52a5feb7fac38f68da5afef9cedd9b3bfc8473ca) / `Telegram Desktop v7.1.2@3772337d` · 详见 [`docs/verification.md`](docs/verification.md)
 
 > **⚠️ 免责声明 / Disclaimer — 含 Cloudflare 违规风险提示**
@@ -69,6 +67,8 @@ node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
 ---
 
 ### 方式一：一键部署（最快，推荐新手）
+
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create)
 
 1. **先 Fork 再部署**：将仓库 Fork 到你自己的 GitHub（右上 Fork → `你的用户名/Telegram-WEB-Cloudflare-Workers`），然后 `dash.cloudflare.com → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork` → `项目名称 Telegram-WEB-Cloudflare-Workers` → `路径 /` → `部署命令 npx wrangler deploy` → `PROXY_SECRET` 加密 → 部署
 2. 按页面提示用 GitHub 登录并授权 Cloudflare
