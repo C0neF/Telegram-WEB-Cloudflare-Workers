@@ -1,0 +1,11 @@
+name = "telegram-web-proxy-validation-probe"
+main = "src/index.js"
+compatibility_date = "2026-08-25"
+
+[[durable_objects.bindings]]
+name = "RELAY_PROBE"
+class_name = "RelayProbe"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = [ "RelayProbe" ]

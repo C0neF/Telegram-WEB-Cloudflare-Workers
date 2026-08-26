@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Cloudflare
+.wrangler/
+.wrangler-dry-run/
+.dev.vars
+.dev.vars.*
+wrangler.toml.bak
+
+# Secrets & local env
+.env
+.env.*
+*.secret
+*.key
+
+# Research caches (large upstream checkouts — re-fetch via git if needed)
+.research-cache/
+.research-mtproxy/
+.research-tdesktop/
+.research-telegram-android/
+.research-telegram-ios/
+.research-telegram-*/
+
+# Artifacts & logs
+app/artifacts/*.json
+!app/artifacts/.gitkeep
+validation/artifacts/*.json
+!validation/artifacts/.gitkeep
+*.log
+*.cpuprofile
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Editor
+.vscode/
+.idea/
+*.code-workspace
+
+# Temp probes (local debugging)
+tmp_*.mjs
+capture_tail.mjs
+tail.log
+
+# Command/code scratch dirs
+.commandcode/
+tmp/

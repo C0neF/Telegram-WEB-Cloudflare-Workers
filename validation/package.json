@@ -1,0 +1,8 @@
+{
+  "name": "telegram-web-proxy-validation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

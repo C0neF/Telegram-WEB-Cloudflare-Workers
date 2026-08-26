@@ -1,0 +1,33 @@
+{
+  "name": "telegram-web-proxy",
+  "version": "1.0.0",
+  "description": "Zero-cost Telegram WEB Proxy on Cloudflare Workers Free + SQLite Durable Objects — WebSocket carrier, MTProxy translation, bounded relay",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "author": "",
+  "keywords": [
+    "telegram",
+    "mtproxy",
+    "web-proxy",
+    "cloudflare-workers",
+    "durable-objects",
+    "websocket"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "dev": "npx --yes wrangler@4.126.0 dev --local --port 8792",
+    "deploy": "npx --yes wrangler@4.126.0 deploy",
+    "deploy:dry": "npx --yes wrangler@4.126.0 deploy --dry-run",
+    "probe": "node scripts/public-relay-probe.mjs",
+    "lint": "node --check src/*.js && node --check test/*.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

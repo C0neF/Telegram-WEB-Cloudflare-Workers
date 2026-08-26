@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            app/package.json
+            validation/package.json
+      - name: Install app
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: Unit tests — app
+        working-directory: app
+        run: npm test
+      - name: Wrangler dry-run
+        working-directory: app
+        run: npx --yes wrangler@4.126.0 deploy --dry-run
+      - name: Install validation
+        working-directory: validation
+        run: npm install --no-audit --no-fund
+      - name: Unit tests — validation
+        working-directory: validation
+        run: npm test
+      - name: Check formatting (node --check)
+        run: |
+          node --check app/src/*.js
+          node --check app/test/*.js
+          node --check validation/src/*.js

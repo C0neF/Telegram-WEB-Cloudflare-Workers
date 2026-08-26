@@ -1,0 +1,9 @@
+{
+  "name": "telegram-web-proxy-validation-probe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/worker.test.js",
+    "dev": "wrangler dev --local"
+  }
+}
