@@ -21,9 +21,9 @@
 
 ## 一键部署
 
-> 将 `<OWNER>/<REPO>` 替换为你 Fork 后的仓库地址后点击即可跳转 Cloudflare 一键部署
+> 点击即可跳转 Cloudflare 一键部署（已指向本仓库 `C0neF/Telegram-WEB-Cloudflare-Workers`，Fork 后可将链接中的仓库地址改为你的 Fork）
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/<OWNER>/<REPO>)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers)
 
 | 快捷入口 | 链接 |
 |---|---|
@@ -122,8 +122,8 @@ Telegram Desktop / Android (WEB Proxy v1)
 ### 步骤 0 — 获取代码 & 生成密钥
 
 ```bash
-# 克隆你 Fork 后的仓库
-git clone https://github.com/<OWNER>/<REPO>.git telegram-web-proxy
+# 克隆仓库
+git clone https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers.git telegram-web-proxy
 cd telegram-web-proxy
 
 # 生成 16 字节随机密钥（32 位 hex）
@@ -138,12 +138,12 @@ node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
 
 ### 方式一：一键部署（最快，推荐新手）
 
-1. 将仓库 Fork 到你自己的 GitHub
-2. 把本 README 顶部的部署按钮链接中的 `<OWNER>/<REPO>` 改成你的仓库，点击：
-   
-   `https://deploy.workers.cloudflare.com/?url=https://github.com/<OWNER>/<REPO>`
+1. 将仓库 Fork 到你自己的 GitHub（或直接使用本仓库）
+2. 点击顶部的部署按钮：
 
-   或直接访问 [deploy.workers.cloudflare.com](https://deploy.workers.cloudflare.com/?url=https://github.com/<OWNER>/<REPO>) 粘贴仓库地址
+   `https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers`
+
+   Fork 后可将链接中的 `C0neF/Telegram-WEB-Cloudflare-Workers` 改为你的 `OWNER/REPO`，或直接访问 [deploy.workers.cloudflare.com](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers) 粘贴你的仓库地址
 3. 按页面提示用 GitHub 登录并授权 Cloudflare
 4. 在 **Configure** 页找到 **Secrets** 区域，添加变量：
    - `PROXY_SECRET` = 上一步生成的 32 位 hex（或 `dd`+32 位）
