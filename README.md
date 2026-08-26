@@ -9,11 +9,13 @@
 
 上游基线：[`telegramdesktop/tproxy-server@52a5feb7`](https://github.com/telegramdesktop/tproxy-server/tree/52a5feb7fac38f68da5afef9cedd9b3bfc8473ca) / `Telegram Desktop v7.1.2@3772337d` · 详见 [`docs/verification.md`](docs/verification.md)
 
-> **⚠️ 免责声明 / Disclaimer**
+> **⚠️ 免责声明 / Disclaimer — 含 Cloudflare 违规风险提示**
 >
 > 本项目仅供**学习、研究与技术交流**使用。作者不对使用本项目产生的任何直接或间接后果承担责任。使用者需自行确保在**符合当地法律法规、Telegram 服务条款及 Cloudflare 使用政策**的前提下使用；严禁用于任何违法、违规或侵犯他人权益的用途。因使用或滥用本项目导致的封号、数据丢失、法律纠纷等风险均由使用者自行承担。请在部署前自行评估合规性与安全性。
 >
-> *This project is for **educational and research purposes only**. The authors assume no liability for any consequences arising from its use. Users must ensure compliance with local laws, Telegram's Terms of Service and Cloudflare's policies. Any misuse is at your own risk.*
+> **Cloudflare 风险提示（请谨慎使用）：** 本项目依赖 Cloudflare Workers / Durable Objects 免费套餐承载代理流量。Cloudflare 对代理、隧道、超大流量、滥用行为有主动风控与投诉处置机制，将此类用途判定为违反 [Cloudflare Terms](https://www.cloudflare.com/terms/) / [Self-Serve Subscription Agreement](https://www.cloudflare.com/self-serve-subscription-agreement/) 或触发滥用检测时，可能导致 **Worker 被限流/暂停、workers.dev 域名被封、甚至整个 Cloudflare 账号被封禁**。该风险**无法通过代码规避**，且与流量大小、是否公开分享正相关。**强烈建议仅个人低频自用、勿公开分享链接、勿商用、勿用于高带宽/多用户分发**，并自行备份重要数据、接受随时可能不可用的后果。
+>
+> *This project is for **educational and research purposes only**. The authors assume no liability for any consequences. Users must comply with local laws, Telegram ToS and Cloudflare policies. **Cloudflare-specific risk: using Workers as a proxy may be flagged as abusive per Cloudflare Terms; Workers, routes or accounts may be throttled, suspended or terminated. Use cautiously, keep traffic low, do not share publicly or use commercially.***
 
 ---
 
@@ -33,7 +35,7 @@
 
 **English version:** [README_EN.md](README_EN.md)
 
----
+> **⚠️ 请先阅读免责声明与 Cloudflare 风险提示后再部署** — 详见顶部黄条与文末 [免责声明](#免责声明)。Cloudflare 免费套餐对代理用途存在限流/封禁风险，**务必谨慎使用、仅个人自用、勿公开分享商用**。
 
 ## 目录
 
@@ -392,7 +394,22 @@ A: 不需要。本项目硬约束就是 `$0` 且无 VPS/容器/自建 TCP 后端
 - 如当地法律禁止此类代理服务，请勿部署或使用。
 - 本项目不提供任何 SLA、可用性或安全性保证，按 `MIT` 许可证“按现状”（AS IS）提供。
 
-如不同意本声明，请勿使用本项目。
+### Cloudflare 违规风险（务必谨慎使用）
+
+本项目依赖 Cloudflare Workers / Durable Objects 承载代理流量，**存在明确的平台违规与封禁风险**：
+
+- Cloudflare 对 **代理/隧道类用途、超大流量、免费套餐滥用** 有风控策略，相关行为可能被判定为违反 [Cloudflare Terms](https://www.cloudflare.com/terms/) / [Self-Serve Subscription Agreement](https://www.cloudflare.com/self-serve-subscription-agreement/)，进而导致 **Worker 被限流或暂停、workers.dev 子域被封、自定义域名路由失效、甚至账号级封禁**。
+- 风险与**是否公开分享链接、是否多人共用、是否产生持续高带宽**强相关；公开传播会显著增加被检测/被投诉概率。
+- Free 套餐无 SLA，上述处置可**无预先通知**发生，且**无法通过代码层面规避**。
+
+**使用建议（降低风险）：**
+
+- 仅**个人低频自用**，单账户单 Worker，不做公开服务或商业分发。
+- 控制流量与并发，避免 7×24 满速跑流；必要时自备备用方案。
+- 勿在公开频道/群组分享 `workers.dev` 链接，优先使用自有域名并了解可能牵连主域风险。
+- 接受“随时可能不可用”的后果，重要数据自行备份。
+
+如不能接受上述 Cloudflare 风险，**请勿部署**。如不同意本声明，请勿使用本项目。
 
 ---
 
