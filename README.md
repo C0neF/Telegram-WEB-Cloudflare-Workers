@@ -21,7 +21,7 @@
 
 ## 一键部署
 
-> **必须先 Fork**：`Deploy` 按钮不会直接在他人账户下新建 `telegram-web-proxy`，**只有 Fork 后才会使用你的 Fork 创建 Worker**。未 Fork 直接点按钮，Cloudflare 会在你的账户下新建 `你的用户名/telegram-web-proxy`（非 Fork），不符合预期。
+> **必须先 Fork**：`Deploy` 按钮不会直接在他人账户下新建 `Telegram-WEB-Cloudflare-Workers`，**只有 Fork 后才会使用你的 Fork 创建 Worker**。未 Fork 直接点按钮，Cloudflare 会在你的账户下新建 `你的用户名/Telegram-WEB-Cloudflare-Workers`（非 Fork），不符合预期。
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers)
 
@@ -144,9 +144,9 @@ node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
 ### 方式一：一键部署（最快，推荐新手）
 
 1. 将仓库 Fork 到你自己的 GitHub
-   - **已 Fork → 不要再创建**：`dash.cloudflare.com → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork（`你的用户名/Telegram-WEB-Cloudflare-Workers`）` → `项目名称 telegram-web-proxy` → `路径 /` → `部署命令 npx wrangler deploy` → `PROXY_SECRET` 加密 → 部署。**此路径直接使用已 Fork 的库，不会新建**（已按需求修复：已 Fork 不再创建）。
-   - **未 Fork → 自动帮 Fork**：点击顶部的部署按钮 `https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers`，Cloudflare 会在**你的账户**下自动 Fork/新建 `你的用户名/Telegram-WEB-Cloudflare-Workers`（或 `telegram-web-proxy`）再部署；或先手动 Fork 再按上一条直连。亦可直接访问 [deploy.workers.cloudflare.com](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers) 粘贴地址
-   > **作者自测注意**：作者本人点自己仓库的按钮会在 `C0neF` 账户下新建 `telegram-web-proxy*` 重复库，已清理；作者请用 `npx wrangler deploy` 或 `连接 Git` 方式自测。
+   - **已 Fork → 不要再创建**：`dash.cloudflare.com → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork（`你的用户名/Telegram-WEB-Cloudflare-Workers`）` → `项目名称 Telegram-WEB-Cloudflare-Workers` → `路径 /` → `部署命令 npx wrangler deploy` → `PROXY_SECRET` 加密 → 部署。**此路径直接使用已 Fork 的库，不会新建**（已按需求修复：已 Fork 不再创建）。
+   - **未 Fork → 自动帮 Fork**：点击顶部的部署按钮 `https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers`，Cloudflare 会在**你的账户**下自动 Fork/新建 `你的用户名/Telegram-WEB-Cloudflare-Workers` 再部署；或先手动 Fork 再按上一条直连。亦可直接访问 [deploy.workers.cloudflare.com](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers) 粘贴地址
+   > **作者自测注意**：作者本人点自己仓库的按钮会在 `C0neF` 账户下新建 `Telegram-WEB-Cloudflare-Workers*` 重复库，已清理；作者请用 `npx wrangler deploy` 或 `连接 Git` 方式自测。
 3. 按页面提示用 GitHub 登录并授权 Cloudflare
 4. 在 **Configure** 页找到 **Secrets** 区域，添加变量：
    - `PROXY_SECRET` = 上一步生成的 32 位 hex（或 `dd`+32 位）
@@ -286,11 +286,11 @@ npx wrangler tail   # 需 RELAY_DEBUG=1 才有详细 relay 日志
 | `RELAY_DEBUG` | `wrangler vars` / 控制台 Variable | `1` 开启详细中继日志（`wrangler tail` 可见） |
 | `USE_HIBERNATION` | DO 环境 | `1` 启用休眠 API（密码状态仍在内存，驱逐后流关闭重建） |
 
-`app/wrangler.toml` 默认：
+`app/wrangler.toml` / `wrangler.toml` 默认：
 
 ```toml
-name = "telegram-web-proxy"
-main = "src/index.js"
+name = "telegram-web-cloudflare-workers"
+main = "src/index.js" # 根 wrangler.toml 为 app/src/index.js
 compatibility_date = "2026-08-25"
 compatibility_flags = ["nodejs_compat"]
 ```

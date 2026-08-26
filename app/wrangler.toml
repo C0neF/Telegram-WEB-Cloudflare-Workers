@@ -2,7 +2,7 @@
 # Compatible with telegramdesktop/tproxy-server@52a5feb7 / Desktop v7.1.2
 # $0 target: Workers Free + SQLite Durable Objects Free only
 
-name = "telegram-web-proxy"
+name = "telegram-web-cloudflare-workers"
 main = "src/index.js"
 compatibility_date = "2026-08-25"
 compatibility_flags = ["nodejs_compat"]
