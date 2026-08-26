@@ -54,3 +54,9 @@ tail.log
 # Command/code scratch dirs
 .commandcode/
 tmp/
+
+# --- Docs: keep only root README, ignore other markdown (local only) ---
+# All markdown except top-level README are local-only and not pushed to GitHub
+**/*.md
+!/README.md
+!/README_EN.md
