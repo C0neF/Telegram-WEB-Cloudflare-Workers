@@ -7,6 +7,8 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D18-green)](https://nodejs.org)
 [![Tests](https://img.shields.io/badge/tests-26%20app%20%2B%2025%20validation-brightgreen)](#验证)
 
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create)
+
 上游基线：[`telegramdesktop/tproxy-server@52a5feb7`](https://github.com/telegramdesktop/tproxy-server/tree/52a5feb7fac38f68da5afef9cedd9b3bfc8473ca) / `Telegram Desktop v7.1.2@3772337d` · 详见 [`docs/verification.md`](docs/verification.md)
 
 > **⚠️ 免责声明 / Disclaimer — 含 Cloudflare 违规风险提示**
