@@ -361,9 +361,6 @@ A: 均可。`workers.dev` 零成本即开；自定义域名需 Cloudflare 托管
 **Q: 部署后 Telegram 连不上？**  
 A: 依次检查：`PROXY_SECRET` 是否一致（含 `dd`）、`host` 是否规范化后一致、桥接链接是否 120s 内使用、`wrangler tail` 是否有 `protocolError`。
 
-**Q: 需要 VPS 吗？**  
-A: 不需要。本项目硬约束就是 `$0` 且无 VPS/容器/自建 TCP 后端。
-
 ---
 
 ## 文档索引

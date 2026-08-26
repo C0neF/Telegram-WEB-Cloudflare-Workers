@@ -21,7 +21,6 @@ Pinned upstream: [`telegramdesktop/tproxy-server@52a5feb7`](https://github.com/t
 Host a personal Telegram WEB Proxy without a VPS, containers, or paid backends.
 
 - **$0 / month** — Workers Free (100k req/day) + SQLite Durable Objects Free (100k req/day, 13k GB-s/day)
-- **No VPS / no containers / no origin TCP servers**
 - **Native WEB Proxy v1** — WebSocket carrier multiplexing `OPEN / DATA / WINDOW / CLOSE / PING / PONG`
 - **Full TL surface** — text, updates, photos, video, files (1 GB+ verified; design supports bounded streaming)
 - **Privacy-preserving** — proxy only terminates the outer MTProxy layer; MTProto payloads are treated as opaque bytes, never logged or persisted
