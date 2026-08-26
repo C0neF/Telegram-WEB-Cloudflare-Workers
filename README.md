@@ -21,13 +21,7 @@
 
 ## 一键部署
 
-> 点击即可跳转 Cloudflare 一键部署（已指向本仓库 `C0neF/Telegram-WEB-Cloudflare-Workers`）
-
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers)
-
-> **Fork 逻辑（已按需求明确）**：
-> - **已 Fork**：**不要**点上方 `Deploy` 按钮（按钮必在点击者账户新建 `你的用户名/telegram-web-proxy` 重复库）。请走 `dash.cloudflare.com → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork（`你的用户名/Telegram-WEB-Cloudflare-Workers`）` → `项目名称 telegram-web-proxy` → `路径 /` → `部署命令 npx wrangler deploy` → 部署，直接使用已 Fork 的库。
-> - **未 Fork**：点 `Deploy` 按钮 → Cloudflare 自动帮你 Fork（在你的账户下新建 `你的用户名/Telegram-WEB-Cloudflare-Workers` 或 `telegram-web-proxy`）→ 再部署。或先手动 Fork 再按上一条直连。
 
 | 快捷入口 | 链接 |
 |---|---|
