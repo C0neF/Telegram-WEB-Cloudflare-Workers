@@ -1,0 +1,21 @@
+# Root wrangler config for Cloudflare one-click Deploy button
+# - Cloudflare Deploy runs `npx wrangler deploy` at repo root, so a root wrangler.toml is required
+# - Local dev keeps using app/wrangler.toml (main = "src/index.js"); this file points to app/src/index.js
+name = "telegram-web-proxy"
+main = "app/src/index.js"
+compatibility_date = "2026-08-25"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# RELAY_DEBUG = "0"
+
+[observability]
+enabled = true
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayDO"]
