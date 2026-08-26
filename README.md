@@ -9,6 +9,12 @@
 
 上游基线：[`telegramdesktop/tproxy-server@52a5feb7`](https://github.com/telegramdesktop/tproxy-server/tree/52a5feb7fac38f68da5afef9cedd9b3bfc8473ca) / `Telegram Desktop v7.1.2@3772337d` · 详见 [`docs/verification.md`](docs/verification.md)
 
+> **⚠️ 免责声明 / Disclaimer**
+>
+> 本项目仅供**学习、研究与技术交流**使用。作者不对使用本项目产生的任何直接或间接后果承担责任。使用者需自行确保在**符合当地法律法规、Telegram 服务条款及 Cloudflare 使用政策**的前提下使用；严禁用于任何违法、违规或侵犯他人权益的用途。因使用或滥用本项目导致的封号、数据丢失、法律纠纷等风险均由使用者自行承担。请在部署前自行评估合规性与安全性。
+>
+> *This project is for **educational and research purposes only**. The authors assume no liability for any consequences arising from its use. Users must ensure compliance with local laws, Telegram's Terms of Service and Cloudflare's policies. Any misuse is at your own risk.*
+
 ---
 
 ## 一键部署
@@ -43,6 +49,7 @@
 - [限制与非目标](#限制与非目标)
 - [常见问题](#常见问题)
 - [文档索引](#文档索引)
+- [免责声明](#免责声明)
 
 ---
 
@@ -373,6 +380,19 @@ A: 不需要。本项目硬约束就是 `$0` 且无 VPS/容器/自建 TCP 后端
 - Telegram Desktop 与 [`tproxy-server`](https://github.com/telegramdesktop/tproxy-server) 的 WEB Proxy v1 协议
 - Telegram 核心文档：[MTProto transports](https://core.telegram.org/mtproto/transports)
 - Cloudflare Workers & Durable Objects 文档
+
+---
+
+## 免责声明
+
+本项目**仅供学习、研究、技术交流与个人自用研究**，不得用于任何违反法律法规、Telegram 服务条款或 Cloudflare 可接受使用政策的用途。
+
+- 作者及贡献者不对因部署、使用、配置错误或滥用本项目导致的任何直接/间接损失（包括但不限于账号封禁、数据丢失、网络中断、法律责任）承担责任。
+- 使用者应自行评估并确保在所在地法律允许的范围内使用，自行承担合规与风控义务。
+- 如当地法律禁止此类代理服务，请勿部署或使用。
+- 本项目不提供任何 SLA、可用性或安全性保证，按 `MIT` 许可证“按现状”（AS IS）提供。
+
+如不同意本声明，请勿使用本项目。
 
 ---
 

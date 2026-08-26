@@ -8,6 +8,10 @@
 
 Pinned upstream: [`telegramdesktop/tproxy-server@52a5feb7`](https://github.com/telegramdesktop/tproxy-server/tree/52a5feb7fac38f68da5afef9cedd9b3bfc8473ca) / `Telegram Desktop v7.1.2@3772337d`.
 
+> **⚠️ Disclaimer**
+>
+> This project is for **educational and research purposes only**. The authors assume no liability for any consequences arising from its use. Users must ensure compliance with local laws, Telegram's Terms of Service and Cloudflare's policies. Any misuse, including use for illegal activities or violation of others' rights, is at your own risk. The disclaimer in [`README.md`](README.md) (Chinese version) shall prevail for full terms.
+
 [中文 README](README.md) · [Architecture](#architecture) · [Deploy](#deploy) · [Cost](#cost)
 
 ---
