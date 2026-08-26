@@ -21,9 +21,11 @@
 
 ## 一键部署
 
-> 点击即可跳转 Cloudflare 一键部署（已指向本仓库 `C0neF/Telegram-WEB-Cloudflare-Workers`，Fork 后可将链接中的仓库地址改为你的 Fork）
+> 点击即可跳转 Cloudflare 一键部署（已指向本仓库 `C0neF/Telegram-WEB-Cloudflare-Workers`）
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers)
+
+> **Fork 用户注意**：`Deploy` 按钮会在**点击者的账户**下新建一个 GitHub 库（如 `你的用户名/telegram-web-proxy`）再部署。若已 Fork，请改用 `Cloudflare Dashboard → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork（C0neF/Telegram-WEB-Cloudflare-Workers 的 Fork）`，则直接使用已 Fork 的库、不会在原作者 `C0neF` 账户下创建新库；若仍点按钮，请先将按钮链接中的 `C0neF/Telegram-WEB-Cloudflare-Workers` 手动改为 `你的用户名/Telegram-WEB-Cloudflare-Workers`。
 
 | 快捷入口 | 链接 |
 |---|---|
@@ -138,12 +140,10 @@ node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
 
 ### 方式一：一键部署（最快，推荐新手）
 
-1. 将仓库 Fork 到你自己的 GitHub（或直接使用本仓库）
-2. 点击顶部的部署按钮：
-
-   `https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers`
-
-   Fork 后可将链接中的 `C0neF/Telegram-WEB-Cloudflare-Workers` 改为你的 `OWNER/REPO`，或直接访问 [deploy.workers.cloudflare.com](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers) 粘贴你的仓库地址
+1. 将仓库 Fork 到你自己的 GitHub
+   - **推荐（不新建库）**：`dash.cloudflare.com → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork` → `项目名称 telegram-web-proxy` → `路径 /` → `部署命令 npx wrangler deploy` → `PROXY_SECRET` 加密 → 部署。此方式直接使用已 Fork 的库，不会再新建。
+   - **备选（按钮会新建库）**：点击顶部的部署按钮 `https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers`，Cloudflare 会在**你的账户**下新建一个库再部署；若已 Fork，请先将链接中的 `C0neF/Telegram-WEB-Cloudflare-Workers` 手动改为 `你的用户名/Telegram-WEB-Cloudflare-Workers`，或直接访问 [deploy.workers.cloudflare.com](https://deploy.workers.cloudflare.com/?url=https://github.com/C0neF/Telegram-WEB-Cloudflare-Workers) 粘贴你的 Fork 地址
+   > **作者自测注意**：作者本人点自己仓库的按钮会在 `C0neF` 账户下新建 `telegram-web-proxy*` 重复库，已清理；作者请用 `npx wrangler deploy` 或 `连接 Git` 方式自测。
 3. 按页面提示用 GitHub 登录并授权 Cloudflare
 4. 在 **Configure** 页找到 **Secrets** 区域，添加变量：
    - `PROXY_SECRET` = 上一步生成的 32 位 hex（或 `dd`+32 位）
