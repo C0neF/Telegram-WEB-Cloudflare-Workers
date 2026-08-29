@@ -12,28 +12,31 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
-          cache-dependency-path: |
-            app/package.json
-            validation/package.json
+          cache-dependency-path: app/package-lock.json
       - name: Install app
         working-directory: app
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Unit tests — app
         working-directory: app
         run: npm test
-      - name: Wrangler dry-run
+      - name: Workers runtime tests
         working-directory: app
-        run: npx --yes wrangler@4.126.0 deploy --dry-run
-      - name: Install validation
-        working-directory: validation
-        run: npm install --no-audit --no-fund
+        run: npm run test:runtime
+      - name: Wrangler dry-run — app entry
+        working-directory: app
+        run: npm run deploy:dry
+      - name: Wrangler dry-run — root entry
+        run: node app/node_modules/wrangler/bin/wrangler.js deploy --dry-run --config wrangler.toml
+      - name: Wrangler dry-run — validation probe
+        working-directory: validation/cloudflare-probe
+        run: node ../../app/node_modules/wrangler/bin/wrangler.js deploy --dry-run --config wrangler.toml
       - name: Unit tests — validation
         working-directory: validation
         run: npm test
-      - name: Check formatting (node --check)
+      - name: Check syntax
         run: |
-          node --check app/src/*.js
-          node --check app/test/*.js
+          npm --prefix app run lint
           node --check validation/src/*.js
+          node --check validation/test/*.js

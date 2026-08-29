@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/worker.test.js",
+    "test": "node --import ../../app/test-support/register-cloudflare-hooks.mjs --test test/worker.test.js",
     "dev": "wrangler dev --local"
   }
 }

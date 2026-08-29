@@ -9,13 +9,12 @@ $scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $My
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $scriptRoot '..\artifacts\telegram-wss-probe.json'
 }
-$hosts = @(
-    'pluto.web.telegram.org',
-    'venus.web.telegram.org',
-    'aurora.web.telegram.org',
-    'vesta.web.telegram.org',
-    'flora.web.telegram.org'
-)
+$telegramDcModule = Join-Path $scriptRoot '..\..\shared\telegram-dc.js'
+$hostsJson = & node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { TELEGRAM_HOSTS } = await import(pathToFileURL(process.argv[1])); process.stdout.write(JSON.stringify(TELEGRAM_HOSTS));' $telegramDcModule
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to load the canonical Telegram DC map'
+}
+$hosts = @($hostsJson | ConvertFrom-Json)
 
 function Invoke-WsUpgradeProbe {
     param(

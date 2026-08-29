@@ -1,11 +1,13 @@
+import { DurableObject } from 'cloudflare:workers';
+
+import {
+  TELEGRAM_HOSTS,
+  telegramHostForDc,
+} from '../../../shared/telegram-dc.js';
+
 const PROBE_OBJECT_NAME = 'personal-telegram-relay-validation-v1';
-const TELEGRAM_HOSTS = Object.freeze([
-  'pluto.web.telegram.org',
-  'venus.web.telegram.org',
-  'aurora.web.telegram.org',
-  'vesta.web.telegram.org',
-  'flora.web.telegram.org',
-]);
+
+export { telegramHostForDc } from '../../../shared/telegram-dc.js';
 
 function json(value, init = {}) {
   const headers = new Headers(init.headers);
@@ -21,13 +23,6 @@ function notFound() {
   });
 }
 
-export function telegramHostForDc(dcId) {
-  if (!Number.isInteger(dcId) || dcId === 0 || Math.abs(dcId) > TELEGRAM_HOSTS.length) {
-    throw new RangeError(`Unsupported Telegram DC id: ${dcId}`);
-  }
-  return TELEGRAM_HOSTS[Math.abs(dcId) - 1];
-}
-
 function parsePositiveInt(value, fallback) {
   const parsed = Number(value ?? fallback);
   return Number.isInteger(parsed) ? parsed : NaN;
@@ -40,10 +35,7 @@ async function openTelegramWss(host, { timeoutMs = 10000 } = {}) {
   try {
     const response = await fetch(`https://${host}/apiws`, {
       headers: {
-        Connection: 'Upgrade',
         Upgrade: 'websocket',
-        'Sec-WebSocket-Version': '13',
-        'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
         'Sec-WebSocket-Protocol': 'binary',
       },
       signal: controller.signal,
@@ -96,18 +88,16 @@ export async function handleRequest(request, env) {
     return notFound();
   }
 
-  const id = env.RELAY_PROBE.idFromName(PROBE_OBJECT_NAME);
-  return env.RELAY_PROBE.get(id).fetch(request);
+  return env.RELAY_PROBE.getByName(PROBE_OBJECT_NAME).fetch(request);
 }
 
 export default {
   fetch: handleRequest,
 };
 
-export class RelayProbe {
+export class RelayProbe extends DurableObject {
   constructor(ctx, env) {
-    this.ctx = ctx;
-    this.env = env;
+    super(ctx, env);
     this.bootId = crypto.randomUUID();
     this.bootedAt = new Date().toISOString();
     this.lifecycle = null;

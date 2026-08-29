@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DurableObject } from 'cloudflare:workers';
 
 import {
   RelayProbe,
   handleRequest,
   telegramHostForDc,
 } from '../src/index.js';
+
+test('RelayProbe uses the current Cloudflare DurableObject base class', () => {
+  assert.equal(RelayProbe.prototype instanceof DurableObject, true);
+});
 
 test('worker health endpoint is independent of the Durable Object', async () => {
   const response = await handleRequest(new Request('https://probe.example/healthz'), {});
@@ -21,18 +26,17 @@ test('worker forwards internal probe routes to one deterministic Durable Object'
   const env = {
     PROBE_TOKEN: 'test-probe-token',
     RELAY_PROBE: {
-      idFromName(name) {
+      getByName(name) {
         assert.equal(name, 'personal-telegram-relay-validation-v1');
-        return 'probe-id';
-      },
-      get(id) {
-        assert.equal(id, 'probe-id');
         return {
           fetch(request) {
             calls.push(new URL(request.url).pathname);
             return new Response('forwarded', { status: 202 });
           },
         };
+      },
+      idFromName() {
+        assert.fail('legacy idFromName routing must not be used');
       },
     },
   };
@@ -128,6 +132,40 @@ test('Durable Object outbound probe reports the requested Telegram binary WSS ha
   assert.deepEqual(calls, [
     { host: 'venus.web.telegram.org', options: { holdMs: 25, timeoutMs: 10000 } },
   ]);
+});
+
+test('Cloudflare probe lets the runtime generate WebSocket handshake headers', async () => {
+  const originalFetch = globalThis.fetch;
+  let accepted = false;
+  let closed = false;
+  try {
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, 'https://pluto.web.telegram.org/apiws');
+      assert.deepEqual(options.headers, {
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Protocol': 'binary',
+      });
+      return {
+        status: 101,
+        headers: new Headers({ 'Sec-WebSocket-Protocol': 'binary' }),
+        webSocket: {
+          accept() { accepted = true; },
+          close() { closed = true; },
+        },
+      };
+    };
+    const probe = new RelayProbe(
+      { storage: { sql: { exec: () => [{ ok: 1 }] } } },
+      {},
+    );
+    const response = await probe.fetch(new Request('https://do/probe/outbound-wss?dc=1'));
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).ok, true);
+    assert.equal(accepted, true);
+    assert.equal(closed, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('Durable Object dial probe starts up to eight handshakes together and cycles DC hosts', async () => {

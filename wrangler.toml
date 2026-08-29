@@ -1,6 +1,5 @@
-# Root wrangler config for Cloudflare one-click Deploy button
-# - Cloudflare Deploy runs `npx wrangler deploy` at repo root, so a root wrangler.toml is required
-# - Local dev keeps using app/wrangler.toml (main = "src/index.js"); this file points to app/src/index.js
+# Canonical Wrangler config for one-click deploy, local development, tests, and CI.
+# Cloudflare Deploy runs `npx wrangler deploy` at repo root, so this file stays at the root.
 name = "telegram-web-cloudflare-workers"
 main = "app/src/index.js"
 compatibility_date = "2026-08-25"
@@ -11,6 +10,9 @@ compatibility_flags = ["nodejs_compat"]
 
 [observability]
 enabled = true
+
+[observability.logs]
+invocation_logs = false
 
 [[durable_objects.bindings]]
 name = "RELAY"
