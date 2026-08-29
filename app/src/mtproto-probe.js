@@ -16,7 +16,9 @@ function validNonce(nonce) {
 
 function defaultMessageId() {
   const now = BigInt(Date.now());
-  return ((now / 1000n) << 32n) | ((now % 1000n) << 22n) | 1n;
+  const seconds = now / 1000n;
+  const fraction = (((now % 1000n) << 32n) / 1000n) & 0xfffffffcn;
+  return (seconds << 32n) | (fraction || 4n);
 }
 
 export function buildAbridgedReqPqMulti(nonce = randomBytes(16), options = {}) {

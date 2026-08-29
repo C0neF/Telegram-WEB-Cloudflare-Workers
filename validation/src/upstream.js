@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -9,20 +11,29 @@ export const PINNED_UPSTREAM = Object.freeze({
 });
 
 const REPOSITORIES = Object.freeze({
-  server: `${workspaceRoot}/.research-cache/tproxy-server`,
-  desktop: `${workspaceRoot}/.research-cache/tdesktop`,
+  server: join(workspaceRoot, '.research-cache', 'tproxy-server'),
+  desktop: join(workspaceRoot, '.research-cache', 'tdesktop'),
 });
 
-export function readPinnedSource(repository, sourcePath) {
+export async function readPinnedSource(repository, sourcePath) {
   const repoPath = REPOSITORIES[repository];
   const commit = PINNED_UPSTREAM[repository];
   if (!repoPath || !commit) {
     throw new Error(`Unknown pinned repository: ${repository}`);
   }
 
-  return execFileSync(
-    'git',
-    ['-C', repoPath, 'show', `${commit}:${sourcePath}`],
-    { encoding: 'utf8' },
-  );
+  if (existsSync(join(repoPath, '.git'))) {
+    return execFileSync(
+      'git',
+      ['-C', repoPath, 'show', `${commit}:${sourcePath}`],
+      { encoding: 'utf8' },
+    );
+  }
+  const owner = repository === 'server' ? 'telegramdesktop/tproxy-server' : 'telegramdesktop/tdesktop';
+  const url = `https://raw.githubusercontent.com/${owner}/${commit}/${sourcePath}`;
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'Telegram-WEB-Proxy-validation/1.0' },
+  });
+  if (!response.ok) throw new Error(`Unable to fetch pinned source: ${response.status} ${url}`);
+  return response.text();
 }

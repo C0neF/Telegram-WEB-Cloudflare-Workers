@@ -7,7 +7,12 @@ import {
 } from 'node:crypto';
 import test from 'node:test';
 
-import { openTelegramWss, RelayEngine } from '../src/relay.js';
+import {
+  DialLimiter,
+  openTelegramWss,
+  RelayBudget,
+  RelayEngine,
+} from '../src/relay.js';
 import {
   decodeFrames,
   decodeWindow,
@@ -286,6 +291,7 @@ test('stream and global pending bounds fail only the new stream without growing 
   relay.handleFrame({ type: FRAME_TYPES.OPEN, streamId: 20, payload: Buffer.alloc(0) });
   relay.handleFrame({ type: FRAME_TYPES.OPEN, streamId: 21, payload: Buffer.alloc(0) });
   relay.handleFrame({ type: FRAME_TYPES.DATA, streamId: 20, payload: fixture.transmitted });
+  await new Promise((resolve) => setImmediate(resolve));
   relay.handleFrame({ type: FRAME_TYPES.DATA, streamId: 20, payload: Buffer.alloc(7, 0xaa) });
 
   const closeFrames = carrier.flatMap((batch) => decodeFrames(batch))
@@ -297,6 +303,156 @@ test('stream and global pending bounds fail only the new stream without growing 
   resolveDial(delayedSocket);
   await relay.whenIdle();
   assert.ok(delayedSocket.closed);
+});
+
+test('tiny pending DATA items hit an item limit before their payload reaches the byte cap', async () => {
+  const fixture = await clientRequestFixture(Buffer.alloc(0), 3);
+  const relay = new RelayEngine({
+    secret: SECRET_HEX,
+    maxPendingBytes: 1024 * 1024,
+    maxStreamPendingBytes: 1024 * 1024,
+    maxPendingItems: 4,
+    maxStreamPendingItems: 4,
+    randomBytes: () => Buffer.from(Array.from({ length: 64 }, (_, index) => 0x20 + index)),
+    dialTelegram: async () => new Promise(() => {}),
+    sendCarrier: (frame) => carrier.push(Buffer.from(frame)),
+    closeCarrier: (code, reason) => carrierCloses.push({ code, reason }),
+  });
+  const carrier = [];
+  const carrierCloses = [];
+
+  relay.handleFrame({ type: FRAME_TYPES.OPEN, streamId: 30, payload: Buffer.alloc(0) });
+  relay.handleFrame({ type: FRAME_TYPES.DATA, streamId: 30, payload: fixture.transmitted });
+  for (let index = 0; index < 4; index += 1) {
+    relay.handleFrame({ type: FRAME_TYPES.DATA, streamId: 30, payload: Buffer.of(index) });
+  }
+
+  const closeFrames = carrier.flatMap((batch) => decodeFrames(batch))
+    .filter((frame) => frame.type === FRAME_TYPES.CLOSE);
+  assert.deepEqual(closeFrames.map((frame) => frame.streamId), [30]);
+  assert.equal(carrierCloses.length, 0);
+  assert.equal(relay.pendingBytes, 0);
+  assert.equal(relay.pendingItems, 0);
+});
+
+test('multiple relay engines share one Durable Object pending budget', async () => {
+  const fixture = await clientRequestFixture(Buffer.alloc(0), 3);
+  const budget = new RelayBudget({ maxPendingBytes: 100, maxPendingItems: 10 });
+  const carriers = [[], []];
+  const makeRelay = (index) => new RelayEngine({
+    secret: SECRET_HEX,
+    budget,
+    maxStreamPendingBytes: 1024 * 1024,
+    maxStreamPendingItems: 1024,
+    randomBytes: () => Buffer.from(Array.from({ length: 64 }, (_, offset) => 0x20 + offset)),
+    dialTelegram: async () => new Promise(() => {}),
+    sendCarrier: (frame) => carriers[index].push(Buffer.from(frame)),
+    closeCarrier: () => assert.fail('shared budget overflow should close only its stream'),
+  });
+  const first = makeRelay(0);
+  const second = makeRelay(1);
+
+  for (const relay of [first, second]) {
+    relay.handleFrame({ type: FRAME_TYPES.OPEN, streamId: 1, payload: Buffer.alloc(0) });
+    relay.handleFrame({ type: FRAME_TYPES.DATA, streamId: 1, payload: fixture.transmitted });
+  }
+
+  assert.equal(first.streams.size, 1);
+  assert.equal(second.streams.size, 0);
+  assert.equal(budget.pendingBytes, 64);
+  assert.equal(budget.pendingItems, 1);
+  assert.deepEqual(
+    carriers[1].flatMap((batch) => decodeFrames(batch))
+      .filter((frame) => frame.type === FRAME_TYPES.CLOSE)
+      .map((frame) => frame.streamId),
+    [1],
+  );
+
+  first.shutdown();
+  assert.equal(budget.pendingBytes, 0);
+  assert.equal(budget.pendingItems, 0);
+});
+
+test('multiple relay engines share one Durable Object outstanding budget', () => {
+  const budget = new RelayBudget({
+    maxPendingBytes: 1024,
+    maxPendingItems: 10,
+    maxOutstandingBytes: 100,
+  });
+  const sent = [[], []];
+  const engines = sent.map((carrier) => new RelayEngine({
+    secret: SECRET_HEX,
+    budget,
+    initialWindow: 100,
+    maxOutstandingBytes: 100,
+    dialTelegram: async () => new FakeWebSocket(),
+    sendCarrier: (frame) => carrier.push(Buffer.from(frame)),
+    closeCarrier: () => assert.fail('outstanding pressure must queue instead of closing'),
+  }));
+  budget.onOutstandingAvailable = () => {
+    for (const engine of engines) engine.flushAllDown();
+  };
+  for (const engine of engines) {
+    engine.handleFrame({ type: FRAME_TYPES.OPEN, streamId: 1, payload: Buffer.alloc(0) });
+  }
+  const [firstStream, secondStream] = engines.map((engine) => engine.streams.get(1));
+
+  assert.equal(engines[0].enqueueDown(firstStream, Buffer.alloc(64, 1)), true);
+  assert.equal(engines[1].enqueueDown(secondStream, Buffer.alloc(64, 2)), true);
+  assert.equal(budget.outstandingBytes, 64);
+  assert.equal(secondStream.pendingDown.length, 1);
+
+  engines[0].handleFrame({
+    type: FRAME_TYPES.WINDOW,
+    streamId: 1,
+    payload: encodeWindow(64),
+  });
+
+  assert.equal(firstStream.downOutstanding, 0);
+  assert.equal(secondStream.pendingDown.length, 0);
+  assert.equal(secondStream.downOutstanding, 64);
+  assert.equal(budget.outstandingBytes, 64);
+
+  engines[1].shutdown();
+  assert.equal(budget.outstandingBytes, 0);
+});
+
+test('outbound Telegram handshakes are limited across relay engines', async () => {
+  const limiter = new DialLimiter(2);
+  const releases = [];
+  let active = 0;
+  let highWater = 0;
+  const tasks = Array.from({ length: 5 }, () => limiter.run(() => new Promise((resolve) => {
+    active += 1;
+    highWater = Math.max(highWater, active);
+    releases.push(() => {
+      active -= 1;
+      resolve();
+    });
+  })));
+  const turn = () => new Promise((resolve) => setImmediate(resolve));
+
+  await turn();
+  assert.equal(highWater, 2);
+  assert.equal(active, 2);
+  assert.equal(releases.length, 2);
+
+  releases.shift()();
+  releases.shift()();
+  await turn();
+  assert.equal(highWater, 2);
+  assert.equal(active, 2);
+  assert.equal(releases.length, 2);
+
+  releases.shift()();
+  releases.shift()();
+  await turn();
+  assert.equal(active, 1);
+  assert.equal(releases.length, 1);
+  releases.shift()();
+  await Promise.all(tasks);
+  assert.equal(active, 0);
+  assert.equal(highWater, 2);
 });
 
 test('malformed direction, oversized DATA, and excess WINDOW close the whole carrier', () => {
@@ -417,7 +573,10 @@ test('outbound WSS dialer opts into ArrayBuffer binary delivery and half-open pr
     {
       fetchImpl: async (url, options) => {
         assert.equal(url, 'https://pluto.web.telegram.org/apiws');
-        assert.equal(options.headers['Sec-WebSocket-Protocol'], 'binary');
+        assert.deepEqual(options.headers, {
+          Upgrade: 'websocket',
+          'Sec-WebSocket-Protocol': 'binary',
+        });
         return {
           status: 101,
           headers: new Headers({ 'Sec-WebSocket-Protocol': 'binary' }),

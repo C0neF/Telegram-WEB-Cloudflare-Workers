@@ -8,20 +8,29 @@
  * - Terminates MTProxy outer obfuscation and relays to Telegram official WSS
  * - Enforces bounded flow control and constant-time secret comparison
  */
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { domainToASCII } from 'node:url';
+import { createHash, randomBytes } from 'node:crypto';
+import { DurableObject } from 'cloudflare:workers';
 
+import { matchesBridgeCapability } from './capability.js';
 import { decodeFrames, encodeFrame, FRAME_TYPES } from './protocol.js';
-import { openTelegramWss, RelayEngine } from './relay.js';
+import {
+  DialLimiter,
+  openTelegramWss,
+  RelayBudget,
+  RelayEngine,
+} from './relay.js';
 
 export { encodeFrame, FRAME_TYPES } from './protocol.js';
+export { computeCapability, normalizeWebProxyHost } from './capability.js';
 
 /** Bootstrap token TTL — single-use, 120s */
 const BOOTSTRAP_TTL_MS = 120_000;
-/** Session token TTL (informational — memory-only in DO) */
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+/** Unattached session must bind its carrier promptly. */
+const SESSION_ATTACH_TTL_MS = BOOTSTRAP_TTL_MS;
+const MAX_BOOTSTRAPS = 64;
+const MAX_SESSIONS = 8;
 /** Singleton DO name for the personal relay */
-const PROXY_OBJECT_NAME = 'personal-telegram-relay-canary-v1';
+const PROXY_OBJECT_NAME = 'personal-telegram-relay-v1';
 
 function json(value, init = {}) {
   const headers = new Headers(init.headers);
@@ -37,48 +46,65 @@ function notFound() {
   });
 }
 
+function busy() {
+  return new Response('Service unavailable', {
+    status: 503,
+    headers: { 'cache-control': 'no-store', 'retry-after': '1' },
+  });
+}
+
+function validApiRequest(request, url) {
+  if (url.search) return false;
+  if (url.pathname === '/api/v1/session') {
+    if (request.headers.has('Cookie') || !bearer(request.headers.get('Authorization'))) return false;
+    if (request.method === 'DELETE') return true;
+    if (request.method !== 'POST'
+      || request.headers.get('Content-Type') !== 'application/octet-stream') return false;
+    const length = request.headers.get('Content-Length');
+    return length === null || (/^\d+$/.test(length) && Number(length) <= 64);
+  }
+  if (url.pathname === '/api/v1/ws') {
+    return request.method === 'GET'
+      && request.headers.get('Upgrade')?.toLowerCase() === 'websocket'
+      && parseCarrierProtocol(request.headers.get('Sec-WebSocket-Protocol') || '') !== null;
+  }
+  return false;
+}
+
+async function readBodyAtMost(request, maxBytes) {
+  const length = request.headers.get('Content-Length');
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes)) {
+    try { await request.body?.cancel('body too large'); } catch {}
+    return null;
+  }
+  if (!request.body) return Buffer.alloc(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const bytes = Buffer.from(value);
+      total += bytes.length;
+      if (total > maxBytes) {
+        try { await reader.cancel('body too large'); } catch {}
+        return null;
+      }
+      chunks.push(bytes);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+
 function randomToken() {
   return randomBytes(32).toString('base64url');
 }
 
 function tokenHash(token) {
   return createHash('sha256').update(token).digest('hex');
-}
-
-function equalText(left, right) {
-  const a = Buffer.from(String(left));
-  const b = Buffer.from(String(right));
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-function decodeSecret(value) {
-  const text = String(value ?? '').trim();
-  if (!/^(?:[0-9a-f]{32}|dd[0-9a-f]{32})$/i.test(text)) {
-    throw new Error('PROXY_SECRET must be 16 bytes, or dd plus 16 bytes, in hex');
-  }
-  return Buffer.from(text, 'hex');
-}
-
-function normalizeHost(value) {
-  const input = String(value).trim();
-  if (!input || /[:/?#@]/.test(input) || input.endsWith('.')) return '';
-  const ascii = domainToASCII(input).toLowerCase();
-  if (!ascii || ascii.length > 253 || !ascii.includes('.')) return '';
-  const labels = ascii.split('.');
-  if (labels.some((label) =>
-    !label || label.length > 63 || label.startsWith('-') || label.endsWith('-') ||
-    !/^[a-z0-9-]+$/i.test(label))) return '';
-  if (/(?:^|\.)\d+$/.test(ascii) || /^(?:\d{1,3}\.){3}\d{1,3}$/.test(ascii)) return '';
-  return ascii;
-}
-
-export function computeCapability(host, secretHex) {
-  const canonical = normalizeHost(host);
-  if (!canonical) throw new Error('invalid public hostname');
-  const secret = decodeSecret(secretHex);
-  return createHmac('sha256', secret)
-    .update(`tdesktop-web-proxy-bridge-v1\n${canonical}`)
-    .digest('base64url');
 }
 
 export function parseCarrierProtocol(protocol) {
@@ -112,12 +138,38 @@ const relayOrigin=${JSON.stringify(origin)},bootstrap=${JSON.stringify(bootstrap
 const fragment=location.hash,androidNonce=/^#android=([A-Za-z0-9_-]{43})$/.exec(fragment)?.[1]||'';
 history.replaceState(null,'',location.pathname);
 let initialized=false,closed=false,port=null,sessionToken='',socket=null,creating=false;
-const pending=[];
+const MAX_PENDING_BYTES=32*1024*1024,MAX_PENDING_ITEMS=4096,pending=[];
+const SESSION_CREATE_BUDGET_MS=90000,SESSION_RETRY_MAX_MS=4000;
+let pendingBytes=0;
 const status=state=>{if(port&&!closed)port.postMessage({t:'status',state})};
 const requestOptions=(method,token,body,keepalive=false)=>({
  method,body,keepalive,mode:'same-origin',credentials:'omit',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer',
  headers:Object.assign(token?{Authorization:'Bearer '+token}:{},body?{'Content-Type':'application/octet-stream'}:{})
 });
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function sessionRetryDelay(response,attempt){
+ const header=response?.headers.get('Retry-After');
+ const seconds=header===null||header===undefined||header===''?NaN:Number(header);
+ if(Number.isFinite(seconds)&&seconds>=0)return Math.min(SESSION_RETRY_MAX_MS,seconds*1000);
+ return Math.min(SESSION_RETRY_MAX_MS,250*(2**attempt));
+}
+async function requestSession(first){
+ const started=Date.now();let attempt=0;
+ for(;;){
+  let response;
+  try{response=await fetch(relayOrigin+'/api/v1/session',requestOptions('POST',bootstrap,first))}
+  catch(error){
+   const delay=sessionRetryDelay(null,attempt++);
+   if(Date.now()-started+delay>SESSION_CREATE_BUDGET_MS)throw error;
+   await sleep(delay);continue
+  }
+  if(response.status!==503)return response;
+  const delay=sessionRetryDelay(response,attempt++);
+  try{await response.body?.cancel()}catch(error){}
+  if(Date.now()-started+delay>SESSION_CREATE_BUDGET_MS)return response;
+  await sleep(delay);
+ }
+}
 function fail(){
  if(closed)return;
  status('failed');
@@ -129,11 +181,16 @@ function close(notifyServer){
  closed=true;
  if(socket)try{socket.close()}catch(error){}
  if(notifyServer&&sessionToken)fetch(relayOrigin+'/api/v1/session',requestOptions('DELETE',sessionToken,null,true)).catch(()=>{});
+ pending.length=0;pendingBytes=0;
  if(port)port.close();
 }
 function queueCarrier(data){
  if(!(data instanceof ArrayBuffer)||!data.byteLength){fail();return}
- if(!socket||socket.readyState!==WebSocket.OPEN){pending.push(data);return}
+ if(!socket||socket.readyState!==WebSocket.OPEN){
+  if(pendingBytes+data.byteLength>MAX_PENDING_BYTES||pending.length>=MAX_PENDING_ITEMS){fail();return}
+  pending.push(data);pendingBytes+=data.byteLength;return
+ }
+ if(socket.bufferedAmount+data.byteLength>MAX_PENDING_BYTES){fail();return}
  try{socket.send(data)}catch(error){fail()}
 }
 function openWebSocket(){
@@ -155,16 +212,17 @@ function openWebSocket(){
 async function createSession(first){
  try{
   status('connecting');
-  const response=await fetch(relayOrigin+'/api/v1/session',requestOptions('POST',bootstrap,first));
+  const response=await requestSession(first);
   if(response.status!==200||response.headers.get('X-Carrier-Mode')!=='websocket')throw new Error('session rejected');
   sessionToken=response.headers.get('X-Session-Token')||'';
   if(!/^[A-Za-z0-9_-]{43}$/.test(sessionToken))throw new Error('missing session token');
   const welcome=await response.arrayBuffer();
-  await openWebSocket();
   if(closed)return;
   port.postMessage(welcome,[welcome]);
+  await openWebSocket();
+  if(closed)return;
   status('connected');
-  for(const data of pending.splice(0))queueCarrier(data);
+  for(const data of pending.splice(0)){pendingBytes-=data.byteLength;queueCarrier(data);if(closed)break}
  }catch(error){fail()}
 }
 function activatePort(nextPort){
@@ -211,25 +269,17 @@ function validRootCapability(request, env) {
   const entries = [...url.searchParams.entries()];
   if (entries.length !== 1 || entries[0][0] !== 'bridge') return false;
   const value = entries[0][1];
-  if (!/^[A-Za-z0-9_-]{43}$/.test(value)) return false;
-  let expected;
-  try {
-    expected = computeCapability(url.hostname, env.PROXY_SECRET);
-  } catch {
-    return false;
-  }
-  return equalText(value, expected);
+  return matchesBridgeCapability(value, url.hostname, env.PROXY_SECRET);
 }
 
 export async function handleRequest(request, env) {
   const url = new URL(request.url);
-  if (url.pathname === '/healthz') {
-    return json({ ok: true, service: 'telegram-web-proxy-canary' });
+  if (url.pathname === '/healthz' && request.method === 'GET') {
+    return json({ ok: true, service: 'telegram-web-proxy' });
   }
   if (validRootCapability(request, env)) {
     const bootstrap = randomToken();
-    const id = env.RELAY.idFromName(PROXY_OBJECT_NAME);
-    const relay = env.RELAY.get(id);
+    const relay = env.RELAY.getByName(PROXY_OBJECT_NAME);
     const response = await relay.fetch(new Request('https://relay/internal/bootstrap', {
       method: 'POST',
       headers: { 'X-Bootstrap-Token': bootstrap },
@@ -250,31 +300,33 @@ export async function handleRequest(request, env) {
     });
   }
   if (url.pathname === '/' && request.method === 'GET') {
-    return new Response('<!doctype html><title>Telegram WEB Proxy canary</title><p>Telegram WEB Proxy canary</p>', {
+    return new Response('<!doctype html><title>Telegram WEB Proxy</title><p>Telegram WEB Proxy</p>', {
       status: 200,
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
     });
   }
-  if (!url.pathname.startsWith('/api/v1/')) return notFound();
-  const id = env.RELAY.idFromName(PROXY_OBJECT_NAME);
-  return env.RELAY.get(id).fetch(request);
+  if (!validApiRequest(request, url)) return notFound();
+  return env.RELAY.getByName(PROXY_OBJECT_NAME).fetch(request);
 }
 
 export default { fetch: handleRequest };
 
-export class RelayDO {
+export class RelayDO extends DurableObject {
   constructor(ctx, env = {}) {
-    this.ctx = ctx;
-    this.env = env;
+    super(ctx, env);
     // A live Telegram upstream carries non-persistable AES-CTR state. Keep the
     // carrier on the standard in-memory WebSocket API; on eviction/restart the
     // socket closes and Telegram rebuilds the stream instead of reusing cipher
     // state in a new object instance.
-    this.useHibernation = env.USE_HIBERNATION === '1';
     this.bootId = randomBytes(16).toString('hex');
     this.bootstraps = new Map();
     this.sessions = new Map();
+    this.sessionSet = new Set();
     this.sockets = new Map();
+    this.relayBudget = new RelayBudget({
+      onOutstandingAvailable: () => this.flushRelayDown(),
+    });
+    this.dialLimiter = new DialLimiter();
   }
 
   async fetch(request) {
@@ -289,33 +341,34 @@ export class RelayDO {
   issueBootstrap(request) {
     const token = request.headers.get('X-Bootstrap-Token') || '';
     if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return notFound();
-    this.bootstraps.set(tokenHash(token), {
-      tokenHash: tokenHash(token),
+    this.sweepExpiredBootstraps();
+    this.sweepExpiredSessions();
+    const hash = tokenHash(token);
+    if (!this.bootstraps.has(hash) && this.bootstraps.size >= MAX_BOOTSTRAPS) return busy();
+    this.bootstraps.set(hash, {
+      tokenHash: hash,
       createdAt: Date.now(),
     });
     return new Response(null, { status: 204 });
   }
 
   async session(request) {
+    this.sweepExpiredBootstraps();
+    this.sweepExpiredSessions();
     const token = bearer(request.headers.get('Authorization'));
     if (!token) return notFound();
     const hash = tokenHash(token);
     if (request.method === 'DELETE') {
       const session = this.sessions.get(hash);
       if (!session || session.hash !== hash) return notFound();
-      session.engine?.shutdown('session deleted');
-      try { session.socket?.close?.(1000, 'session deleted'); } catch { try { session.socket?.close?.(); } catch {} }
-      this.sessions.delete(session.hash);
-      for (const [key, value] of this.sessions) {
-        if (value === session) this.sessions.delete(key);
-      }
+      this.disposeSession(session, 'session deleted');
       return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } });
     }
     if (request.method !== 'POST' || request.headers.get('Content-Type') !== 'application/octet-stream') return notFound();
     const bootstrap = this.bootstraps.get(hash);
     if (!bootstrap || Date.now() - bootstrap.createdAt > BOOTSTRAP_TTL_MS) return notFound();
-    const body = new Uint8Array(await request.arrayBuffer());
-    if (body.length > 64) return notFound();
+    const body = await readBodyAtMost(request, 64);
+    if (body === null) return notFound();
     let frames;
     try { frames = decodeFrames(body); } catch { return notFound(); }
     if (frames.length !== 1 || frames[0].type !== FRAME_TYPES.HELLO || frames[0].streamId !== 0 || Buffer.compare(frames[0].payload, Buffer.of(1)) !== 0) return notFound();
@@ -325,18 +378,22 @@ export class RelayDO {
       if (existing.fingerprint !== fingerprint) return notFound();
       return this.sessionResponse(existing.token, existing.welcome);
     }
+    if (this.sessionSet.size >= MAX_SESSIONS) return busy();
     const sessionToken = randomToken();
+    const welcome = encodeFrame(FRAME_TYPES.WELCOME, 0);
     const session = {
       token: sessionToken,
       hash: tokenHash(sessionToken),
+      bootstrapHash: hash,
       fingerprint,
+      welcome,
       createdAt: Date.now(),
       socket: null,
-      challenge: null,
     };
     this.sessions.set(hash, session);
     this.sessions.set(session.hash, session);
-    return this.sessionResponse(sessionToken, encodeFrame(FRAME_TYPES.WELCOME, 0));
+    this.sessionSet.add(session);
+    return this.sessionResponse(sessionToken, welcome);
   }
 
   sessionResponse(token, welcome) {
@@ -352,7 +409,23 @@ export class RelayDO {
     });
   }
 
+  sweepExpiredBootstraps(now = Date.now()) {
+    for (const [hash, bootstrap] of this.bootstraps) {
+      if (now - bootstrap.createdAt > BOOTSTRAP_TTL_MS) this.bootstraps.delete(hash);
+    }
+  }
+
+  sweepExpiredSessions(now = Date.now()) {
+    for (const session of this.sessionSet) {
+      if (!session.socket && now - session.createdAt > SESSION_ATTACH_TTL_MS) {
+        this.disposeSession(session, 'session expired');
+      }
+    }
+  }
+
   attachWebSocket(request) {
+    this.sweepExpiredBootstraps();
+    this.sweepExpiredSessions();
     const parsed = parseCarrierProtocol(request.headers.get('Sec-WebSocket-Protocol') || '');
     if (!parsed) return notFound();
     const session = this.sessions.get(tokenHash(parsed.token));
@@ -361,7 +434,6 @@ export class RelayDO {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     session.socket = server;
-    session.challenge = randomBytes(16);
     const dialTelegram = this.env.__dialTelegram
       ?? ((target) => openTelegramWss(target, { fetchImpl: this.env.__fetch ?? fetch }));
     session.engine = new RelayEngine({
@@ -371,23 +443,20 @@ export class RelayDO {
       sendCarrier: (frame) => server.send(frame),
       closeCarrier: (code, reason) => server.close?.(code, reason),
       debug: this.env.RELAY_DEBUG === '1',
+      budget: this.relayBudget,
+      dialLimiter: this.dialLimiter,
     });
     this.sockets.set(server, session);
     try { server.binaryType = 'arraybuffer'; } catch {}
-    if (this.useHibernation && typeof this.ctx.acceptWebSocket === 'function') {
-      this.ctx.acceptWebSocket(server);
-    } else if (typeof server.accept === 'function') {
+    if (typeof server.accept === 'function') {
       server.accept({ allowHalfOpen: true });
       server.addEventListener?.('message', (event) => {
         const idle = this.webSocketMessage(server, event.data);
         if (idle && typeof this.ctx.waitUntil === 'function') this.ctx.waitUntil(idle);
       });
-    } else if (typeof this.ctx.acceptWebSocket === 'function') {
-      this.ctx.acceptWebSocket(server);
     }
     server.addEventListener?.('close', () => this.detach(server));
     server.addEventListener?.('error', () => this.detach(server));
-    server.send(encodeFrame(FRAME_TYPES.PING, 0, session.challenge));
     const protocol = `tproxy-v1.${session.token}`;
     try {
       return new Response(null, {
@@ -410,6 +479,7 @@ export class RelayDO {
   webSocketMessage(socket, message) {
     const session = this.sockets.get(socket);
     if (!session) return;
+    const work = [];
     let frames;
     try {
       frames = decodeFrames(message);
@@ -420,17 +490,17 @@ export class RelayDO {
       return;
     }
     for (const frame of frames) {
-      if (frame.type === FRAME_TYPES.PONG && frame.streamId === 0 && session.challenge && Buffer.compare(frame.payload, session.challenge) === 0) {
-        session.challenge = null;
-        continue;
-      }
       if (frame.streamId === 0) {
         socket.close?.(1002, 'unsupported frame');
-        return;
+        return work.length ? Promise.all(work) : undefined;
       }
-      session.engine.handleFrame(frame);
-      if (session.engine.carrierClosed) return;
+      const pending = session.engine.handleFrame(frame);
+      if (pending) work.push(pending);
+      if (session.engine.carrierClosed) {
+        return work.length ? Promise.all(work) : undefined;
+      }
     }
+    return work.length ? Promise.all(work) : undefined;
   }
 
   webSocketClose(socket) {
@@ -444,10 +514,28 @@ export class RelayDO {
   detach(socket) {
     const session = this.sockets.get(socket);
     if (!session) return;
-    this.sockets.delete(socket);
-    if (session.socket === socket) session.socket = null;
-    session.engine?.shutdown('carrier detached');
+    this.disposeSession(session, 'carrier detached', false);
+  }
+
+  disposeSession(session, reason, closeSocket = true) {
+    session.engine?.shutdown(reason);
     session.engine = null;
+    const socket = session.socket;
+    session.socket = null;
+    if (socket) {
+      this.sockets.delete(socket);
+      if (closeSocket) {
+        try { socket.close?.(1000, reason); } catch { try { socket.close?.(); } catch {} }
+      }
+    }
+    this.sessions.delete(session.hash);
+    this.sessions.delete(session.bootstrapHash);
+    this.sessionSet.delete(session);
+    this.bootstraps.delete(session.bootstrapHash);
+  }
+
+  flushRelayDown() {
+    for (const session of this.sessionSet) session.engine?.flushAllDown();
   }
 }
 

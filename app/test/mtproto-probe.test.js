@@ -20,6 +20,20 @@ test('req_pq_multi probe builds a valid abridged unencrypted MTProto packet', ()
   assert.deepEqual(packet.subarray(25), nonce);
 });
 
+test('default req_pq_multi message id is current, nonzero-fractional, and client-divisible by four', () => {
+  const originalNow = Date.now;
+  try {
+    Date.now = () => 1_700_000_000_500;
+    const packet = buildAbridgedReqPqMulti(Buffer.alloc(16));
+    const messageId = packet.readBigUInt64LE(9);
+    assert.equal(messageId % 4n, 0n);
+    assert.notEqual(messageId & 0xffffffffn, 0n);
+    assert.equal(messageId >> 32n, 1_700_000_000n);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test('resPQ parser accepts fragmented abridged response and verifies the original nonce', () => {
   const nonce = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
   const serverNonce = Buffer.from('ffeeddccbbaa99887766554433221100', 'hex');

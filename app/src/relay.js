@@ -3,7 +3,7 @@
  *
  * Design constraints:
  * - 32 streams max, 4 MiB initial window per direction
- * - 32 MiB global pending cap (prevents OOM on large files)
+ * - DO-wide 32 MiB / 32K-item pending and outstanding caps
  * - DATA chunks ≤ 64 KiB; carrier batch ≤ 2 MiB
  * - Tombstones prevent stream-id reuse races
  */
@@ -19,26 +19,102 @@ import {
   INITIAL_STREAM_WINDOW,
   MAX_DATA_CHUNK,
 } from './protocol.js';
+import { telegramHostForDc } from '../../shared/telegram-dc.js';
 
-const TELEGRAM_HOSTS = Object.freeze([
-  'pluto.web.telegram.org',
-  'venus.web.telegram.org',
-  'aurora.web.telegram.org',
-  'vesta.web.telegram.org',
-  'flora.web.telegram.org',
-]);
+export { telegramHostForDc } from '../../shared/telegram-dc.js';
 const DEFAULT_MAX_STREAMS = 32;
 const DEFAULT_MAX_PENDING_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_STREAM_PENDING_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_PENDING_ITEMS = 32 * 1024;
+const DEFAULT_MAX_STREAM_PENDING_ITEMS = 4 * 1024;
 const DEFAULT_MAX_TOMBSTONES = 4096;
+const DEFAULT_MAX_CONCURRENT_DIALS = 4;
 
-/** Resolve official Telegram WSS host for a DC id (supports media sign via abs) */
-export function telegramHostForDc(dcId) {
-  const baseDcId = Math.abs(dcId);
-  if (!Number.isInteger(dcId) || dcId === 0 || baseDcId > TELEGRAM_HOSTS.length) {
-    throw new RangeError(`Unsupported Telegram DC id ${dcId}`);
+export class DialLimiter {
+  constructor(maxConcurrent = DEFAULT_MAX_CONCURRENT_DIALS) {
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
+      throw new RangeError('maxConcurrent must be a positive integer');
+    }
+    this.maxConcurrent = maxConcurrent;
+    this.active = 0;
+    this.queue = [];
   }
-  return TELEGRAM_HOSTS[baseDcId - 1];
+
+  run(task) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ task, resolve, reject });
+      this.drain();
+    });
+  }
+
+  drain() {
+    while (this.active < this.maxConcurrent && this.queue.length) {
+      const item = this.queue.shift();
+      this.active += 1;
+      void Promise.resolve().then(item.task).then(
+        (value) => {
+          item.resolve(value);
+          this.finish();
+        },
+        (error) => {
+          item.reject(error);
+          this.finish();
+        },
+      );
+    }
+  }
+
+  finish() {
+    this.active -= 1;
+    this.drain();
+  }
+}
+
+export class RelayBudget {
+  constructor(options = {}) {
+    this.maxPendingBytes = options.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
+    this.maxPendingItems = options.maxPendingItems ?? DEFAULT_MAX_PENDING_ITEMS;
+    this.maxOutstandingBytes = options.maxOutstandingBytes ?? DEFAULT_MAX_PENDING_BYTES;
+    this.maxOutstandingItems = options.maxOutstandingItems ?? DEFAULT_MAX_PENDING_ITEMS;
+    this.pendingBytes = 0;
+    this.pendingItems = 0;
+    this.outstandingBytes = 0;
+    this.outstandingItems = 0;
+    this.onOutstandingAvailable = options.onOutstandingAvailable;
+  }
+
+  reserve(bytes, items = 1) {
+    if (this.pendingBytes + bytes > this.maxPendingBytes
+      || this.pendingItems + items > this.maxPendingItems) return false;
+    this.pendingBytes += bytes;
+    this.pendingItems += items;
+    return true;
+  }
+
+  release(bytes, items = 1) {
+    this.pendingBytes -= bytes;
+    this.pendingItems -= items;
+    if (this.pendingBytes < 0 || this.pendingItems < 0) {
+      throw new Error('relay pending budget underflow');
+    }
+  }
+
+  reserveOutstanding(bytes, items = 1) {
+    if (this.outstandingBytes + bytes > this.maxOutstandingBytes
+      || this.outstandingItems + items > this.maxOutstandingItems) return false;
+    this.outstandingBytes += bytes;
+    this.outstandingItems += items;
+    return true;
+  }
+
+  releaseOutstanding(bytes, items = 1) {
+    this.outstandingBytes -= bytes;
+    this.outstandingItems -= items;
+    if (this.outstandingBytes < 0 || this.outstandingItems < 0) {
+      throw new Error('relay outstanding budget underflow');
+    }
+    this.onOutstandingAvailable?.();
+  }
 }
 
 /** Open an outbound Telegram WSS with timeout and strict subprotocol check */
@@ -50,10 +126,7 @@ export async function openTelegramWss(target, options = {}) {
   try {
     const response = await fetchImpl(`https://${target.host}/apiws`, {
       headers: {
-        Connection: 'Upgrade',
         Upgrade: 'websocket',
-        'Sec-WebSocket-Version': '13',
-        'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
         'Sec-WebSocket-Protocol': 'binary',
       },
       signal: controller.signal,
@@ -96,12 +169,22 @@ export class RelayEngine {
     this.dialTelegram = options.dialTelegram;
     this.sendCarrier = options.sendCarrier;
     this.closeCarrier = options.closeCarrier;
+    this.dialLimiter = options.dialLimiter ?? new DialLimiter();
     this.initialWindow = options.initialWindow ?? INITIAL_STREAM_WINDOW;
     this.maxDataChunk = options.maxDataChunk ?? MAX_DATA_CHUNK;
     this.maxStreams = options.maxStreams ?? DEFAULT_MAX_STREAMS;
     this.maxPendingBytes = options.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
     this.maxStreamPendingBytes = options.maxStreamPendingBytes
       ?? DEFAULT_MAX_STREAM_PENDING_BYTES;
+    this.maxPendingItems = options.maxPendingItems ?? DEFAULT_MAX_PENDING_ITEMS;
+    this.maxStreamPendingItems = options.maxStreamPendingItems
+      ?? DEFAULT_MAX_STREAM_PENDING_ITEMS;
+    this.budget = options.budget ?? new RelayBudget({
+      maxPendingBytes: this.maxPendingBytes,
+      maxPendingItems: this.maxPendingItems,
+      maxOutstandingBytes: options.maxOutstandingBytes,
+      maxOutstandingItems: options.maxOutstandingItems,
+    });
     this.maxOutstandingBytes = options.maxOutstandingBytes ?? DEFAULT_MAX_PENDING_BYTES;
     this.maxTombstones = options.maxTombstones ?? DEFAULT_MAX_TOMBSTONES;
     this.streams = new Map();
@@ -110,6 +193,7 @@ export class RelayEngine {
     this.tasks = new Set();
     this.carrierClosed = false;
     this.pendingBytes = 0;
+    this.pendingItems = 0;
     this.downOutstanding = 0;
     this.debug = options.debug === true;
   }
@@ -155,8 +239,7 @@ export class RelayEngine {
         return;
       }
       stream.clientCredit -= payload.length;
-      this.handleClientData(stream, payload);
-      return;
+      return this.handleClientData(stream, payload);
     }
     if (type === FRAME_TYPES.WINDOW) {
       let amount;
@@ -168,6 +251,7 @@ export class RelayEngine {
       stream.downOutstanding -= amount;
       this.downOutstanding -= amount;
       stream.relayCredit += amount;
+      this.releaseDownOutstanding(stream, amount);
       this.flushAllDown();
       return;
     }
@@ -191,10 +275,13 @@ export class RelayEngine {
       clientCredit: this.initialWindow,
       relayCredit: this.initialWindow,
       downOutstanding: 0,
+      sentDown: [],
       pendingUp: [],
       pendingUpBytes: 0,
+      pendingUpItems: 0,
       pendingDown: [],
       pendingDownBytes: 0,
+      pendingDownItems: 0,
     };
   }
 
@@ -225,8 +312,7 @@ export class RelayEngine {
       }
       if (!this.queueUp(stream, data, stream.preinitCredit)) return;
       stream.preinitCredit = 0;
-      this.startDial(stream);
-      return;
+      return this.startDial(stream);
     }
     const plain = stream.parsed.clientRx.update(payload);
     if (!this.queueUp(
@@ -240,13 +326,16 @@ export class RelayEngine {
   queueUp(stream, data, credit) {
     const bytes = Buffer.from(data);
     if (stream.pendingUpBytes + bytes.length > this.maxStreamPendingBytes
-      || this.pendingBytes + bytes.length > this.maxPendingBytes) {
+      || stream.pendingUpItems + 1 > this.maxStreamPendingItems
+      || !this.budget.reserve(bytes.length)) {
       this.failStream(stream, 'uplink pending limit');
       return false;
     }
     stream.pendingUp.push({ data: bytes, credit });
     stream.pendingUpBytes += bytes.length;
+    stream.pendingUpItems += 1;
     this.pendingBytes += bytes.length;
+    this.pendingItems += 1;
     return true;
   }
 
@@ -260,8 +349,9 @@ export class RelayEngine {
       host: telegramHostForDc(stream.parsed.dcId),
     };
     this.log('dial-start', { streamId: stream.id, dcId: target.dcId, host: target.host });
-    this.track((async () => {
+    return this.track(this.dialLimiter.run(async () => {
       try {
+        if (stream.closed) return;
         const socket = await this.dialTelegram(target);
         if (stream.closed) {
           closeSocket(socket, 1000, 'stream closed');
@@ -285,7 +375,7 @@ export class RelayEngine {
       } finally {
         stream.dialing = false;
       }
-    })());
+    }));
   }
 
   flushUp(stream) {
@@ -293,7 +383,10 @@ export class RelayEngine {
     while (stream.pendingUp.length) {
       const item = stream.pendingUp.shift();
       stream.pendingUpBytes -= item.data.length;
+      stream.pendingUpItems -= 1;
       this.pendingBytes -= item.data.length;
+      this.pendingItems -= 1;
+      this.budget.release(item.data.length);
       try {
         stream.socket.send(item.data);
       } catch {
@@ -332,19 +425,20 @@ export class RelayEngine {
 
   enqueueDown(stream, chunk) {
     if (!stream.pendingDown.length
-      && chunk.length <= stream.relayCredit
-      && this.downOutstanding + chunk.length <= this.maxOutstandingBytes) {
-      this.sendDown(stream, chunk);
+      && this.trySendDown(stream, chunk)) {
       return true;
     }
     if (stream.pendingDownBytes + chunk.length > this.maxStreamPendingBytes
-      || this.pendingBytes + chunk.length > this.maxPendingBytes) {
+      || stream.pendingDownItems + 1 > this.maxStreamPendingItems
+      || !this.budget.reserve(chunk.length)) {
       this.failStream(stream, 'downlink pending limit');
       return false;
     }
     stream.pendingDown.push(chunk);
     stream.pendingDownBytes += chunk.length;
+    stream.pendingDownItems += 1;
     this.pendingBytes += chunk.length;
+    this.pendingItems += 1;
     this.flushDown(stream);
     return true;
   }
@@ -352,20 +446,44 @@ export class RelayEngine {
   flushDown(stream) {
     while (!stream.closed && stream.pendingDown.length) {
       const chunk = stream.pendingDown[0];
-      if (chunk.length > stream.relayCredit
-        || this.downOutstanding + chunk.length > this.maxOutstandingBytes) return;
+      if (!this.trySendDown(stream, chunk)) return;
       stream.pendingDown.shift();
       stream.pendingDownBytes -= chunk.length;
+      stream.pendingDownItems -= 1;
       this.pendingBytes -= chunk.length;
-      this.sendDown(stream, chunk);
+      this.pendingItems -= 1;
+      this.budget.release(chunk.length);
     }
   }
 
-  sendDown(stream, chunk) {
+  trySendDown(stream, chunk) {
+    if (chunk.length > stream.relayCredit
+      || this.downOutstanding + chunk.length > this.maxOutstandingBytes
+      || !this.budget.reserveOutstanding(chunk.length)) return false;
     stream.relayCredit -= chunk.length;
     stream.downOutstanding += chunk.length;
+    stream.sentDown.push(chunk.length);
     this.downOutstanding += chunk.length;
     this.sendCarrier(encodeFrame(FRAME_TYPES.DATA, stream.id, chunk));
+    return true;
+  }
+
+  releaseDownOutstanding(stream, amount) {
+    let remaining = amount;
+    let releasedItems = 0;
+    while (remaining > 0) {
+      const first = stream.sentDown[0];
+      if (!first) throw new Error('stream outstanding accounting underflow');
+      if (remaining >= first) {
+        remaining -= first;
+        stream.sentDown.shift();
+        releasedItems += 1;
+      } else {
+        stream.sentDown[0] = first - remaining;
+        remaining = 0;
+      }
+    }
+    this.budget.releaseOutstanding(amount, releasedItems);
   }
 
   flushAllDown() {
@@ -384,10 +502,19 @@ export class RelayEngine {
     stream.closed = true;
     closeSocket(stream.socket, failed ? 1011 : 1000, reason.slice(0, 120));
     this.pendingBytes -= stream.pendingUpBytes + stream.pendingDownBytes;
+    this.pendingItems -= stream.pendingUpItems + stream.pendingDownItems;
+    this.budget.release(
+      stream.pendingUpBytes + stream.pendingDownBytes,
+      stream.pendingUpItems + stream.pendingDownItems,
+    );
     this.downOutstanding -= stream.downOutstanding;
+    this.budget.releaseOutstanding(stream.downOutstanding, stream.sentDown.length);
     stream.pendingUpBytes = 0;
+    stream.pendingUpItems = 0;
     stream.pendingDownBytes = 0;
+    stream.pendingDownItems = 0;
     stream.downOutstanding = 0;
+    stream.sentDown.length = 0;
     stream.pendingUp.length = 0;
     stream.pendingDown.length = 0;
     this.streams.delete(stream.id);
@@ -428,7 +555,11 @@ export class RelayEngine {
 
   track(promise) {
     this.tasks.add(promise);
-    promise.finally(() => this.tasks.delete(promise));
+    void promise.then(
+      () => this.tasks.delete(promise),
+      () => this.tasks.delete(promise),
+    );
+    return promise;
   }
 
   async whenIdle() {

@@ -15,16 +15,23 @@
     "websocket"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
-    "test": "node --test",
-    "test:watch": "node --test --watch",
-    "dev": "npx --yes wrangler@4.126.0 dev --local --port 8792",
-    "deploy": "npx --yes wrangler@4.126.0 deploy",
-    "deploy:dry": "npx --yes wrangler@4.126.0 deploy --dry-run",
+    "test": "node --import ./test-support/register-cloudflare-hooks.mjs --test",
+    "test:runtime": "vitest run --config vitest.config.js",
+    "test:all": "npm test && npm run test:runtime",
+    "test:watch": "node --import ./test-support/register-cloudflare-hooks.mjs --test --watch",
+    "dev": "wrangler dev --config ../wrangler.toml --local --port 8792",
+    "deploy": "wrangler deploy --config ../wrangler.toml",
+    "deploy:dry": "wrangler deploy --dry-run --config ../wrangler.toml",
     "probe": "node scripts/public-relay-probe.mjs",
-    "lint": "node --check src/*.js && node --check test/*.js"
+    "lint": "node scripts/check-syntax.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.1.1",
+    "vitest": "4.1.11",
+    "wrangler": "4.127.0"
   },
   "repository": {
     "type": "git",
