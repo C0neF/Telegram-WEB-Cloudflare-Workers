@@ -4,10 +4,11 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![English](https://img.shields.io/badge/English-README_EN-blue.svg)](README_EN.md)
 [![Workers](https://img.shields.io/badge/Cloudflare-Workers%20Free-orange)](https://developers.cloudflare.com/workers/)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-green)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/tests-26%20app%20%2B%2025%20validation-brightgreen)](#验证)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-green)](https://nodejs.org)
 
-上游基线：[`telegramdesktop/tproxy-server@52a5feb7`](https://github.com/telegramdesktop/tproxy-server/tree/52a5feb7fac38f68da5afef9cedd9b3bfc8473ca) / `Telegram Desktop v7.1.2@3772337d` · 详见 [`docs/verification.md`](docs/verification.md)
+上游基线：[`telegramdesktop/tproxy-server@52a5feb7`](https://github.com/telegramdesktop/tproxy-server/tree/52a5feb7fac38f68da5afef9cedd9b3bfc8473ca) / `Telegram Desktop v7.1.2@3772337d`；固定源码断言由 [`validation/test/upstream.test.js`](validation/test/upstream.test.js) 执行。
+
+> **当前验证边界：** 本地单元测试、真实 `workerd` carrier/session 握手、固定上游源码断言和双入口 Wrangler dry-run 已通过；公网 `req_pq_multi → resPQ`、真实 Telegram Desktop 文本/媒体、1 GB 连续传输、吞吐和 24 小时 soak 仍待执行。未完成项不得视为已验证。
 
 > **⚠️ 免责声明 / Disclaimer — 含 Cloudflare 违规风险提示**
 >
@@ -22,7 +23,7 @@
 ## 目录
 
 - [特性](#特性)
-- [部署教程](#部署教程) — 一键部署 / Wrangler / 控制台手动
+- [部署教程](#部署教程) — 一键部署 / Wrangler / 控制台连接 Git
 - [配置说明](#配置说明)
 - [在 Telegram Desktop 中使用](#在-telegram-desktop-中使用)
 - [本地开发与验证](#本地开发与验证)
@@ -37,15 +38,15 @@
 
 ## 特性
 
-- **零成本** — Workers Free 100k 请求/天 + Durable Objects Free 100k 请求/天 + 13k GB-s/天，个人日常足够
+- **Free 目标** — Workers Free 100k 请求/天 + Durable Objects Free 100k 请求/天 + 13k GB-s/天；单 DO 全天 duration 理论值在额度内，最终以真实 analytics 为准
 - **无 VPS / 无容器 / 无自建 TCP 后端** — 仅依赖 Cloudflare 免费资源
-- **原生 WEB Proxy v1** — WebSocket 载体，多路复用 `OPEN / DATA / WINDOW / CLOSE / PING / PONG`，完全对齐 `tproxy-server` 协议
-- **全量业务透传** — 文本、更新、图片、视频、文件（已验证 1 GB+，设计支持有界流式）
+- **原生 WEB Proxy v1 frame contract** — WebSocket 载体，多路复用 `OPEN / DATA / WINDOW / CLOSE / PING / PONG`，固定向量与 `tproxy-server` / Desktop 基线一致
+- **不透明业务数据面** — 架构可承载文本、更新、图片、视频和文件字节；真实 Desktop/媒体/1 GB E2E 尚待验证
 - **双 Secret 兼容** — 普通 16 字节（`abridged`）与 `dd` + 16 字节（`padded-intermediate`）
-- **有界中继** — 单 DO 32 流并发、每方向 4 MiB 窗口、全局 32 MiB pending、DATA 分片 64 KiB、载体硬上限 2 MiB（Desktop 兼容）
+- **有界中继** — 单 session 32 流；DO 级共享 32 MiB/32K-item pending 与 outstanding 预算；每流 pending 4 MiB/4K-item、初始双向窗口 4 MiB；DATA 分片 64 KiB；载体硬上限 2 MiB
 - **流式加解密** — 每流 4 组独立 AES-256-CTR 上下文，任意碎片不重置 CTR，已通过随机碎片 bit-exact 测试
 - **隐私** — 仅终止 MTProxy 外层混淆，MTProto 业务按不透明字节转发，不解析、不记录、不落盘
-- **健壮** — tombstone 防流 ID 复用、单流失败仅关闭该流、载体协议错直接 `1002` 关闭
+- **健壮** — tombstone 防流 ID 复用、单流失败隔离、载体协议错 `1002`、4 路共享拨号限流、载体关闭/出错后整 session 重建
 
 > 语音/视频通话不在范围内 — WEB Proxy v1 本身不承载 UDP。
 
@@ -72,10 +73,10 @@ node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
 
 1. **先 Fork 再部署**：将仓库 Fork 到你自己的 GitHub（右上 Fork → `你的用户名/Telegram-WEB-Cloudflare-Workers`），然后 `dash.cloudflare.com → Workers & Pages → 创建应用程序 → 连接 Git → 导入现有存储库 → 选 你的 Fork` → `项目名称 Telegram-WEB-Cloudflare-Workers` → `路径 /` → `部署命令 npx wrangler deploy` → `PROXY_SECRET` 加密 → 部署
 2. 按页面提示用 GitHub 登录并授权 Cloudflare
-4. 在 **Configure** 页找到 **Secrets** 区域，添加变量：
+3. 在 **Configure** 页找到 **Secrets** 区域，添加变量：
    - `PROXY_SECRET` = 上一步生成的 32 位 hex（或 `dd`+32 位）
-5. 点击 **Deploy**，等待约 30 秒
-6. 部署成功后页面会给出 `https://<your-worker>.<subdomain>.workers.dev` 地址 — 立即进入 [验证](#验证部署是否成功)
+4. 点击 **Deploy**，等待约 30 秒
+5. 部署成功后页面会给出 `https://<your-worker>.<subdomain>.workers.dev` 地址 — 立即进入 [验证](#验证部署是否成功)
 
 > 一键部署底层同样创建 `RELAY` Durable Object（`personal-telegram-relay-v1`），无需额外数据库。
 
@@ -87,7 +88,7 @@ node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
 
 ```bash
 cd app
-npm install
+npm ci
 
 # 登录 Cloudflare（会打开浏览器授权）
 npx wrangler login
@@ -100,20 +101,19 @@ npx wrangler whoami
 #### 2. 注入密钥
 
 ```bash
-npx wrangler secret put PROXY_SECRET
+npx wrangler secret put PROXY_SECRET --config ../wrangler.toml
 # 粘贴 32 位 hex 或 dd+32 位，回车
 
-# 可选：开启详细日志（wrangler tail 可见）
-# npx wrangler secret put RELAY_DEBUG  # 输入 1
+# 可选：在 wrangler.toml [vars] 或控制台普通 Variable 中设置 RELAY_DEBUG = "1"
 ```
 
 #### 3. 预检与发布
 
 ```bash
-npm run deploy:dry   # 预检：应显示 38 KiB / gzip ~10 KiB 且检测到 RELAY 绑定
-npm run deploy       # 发布到 https://telegram-web-proxy.<你的子域>.workers.dev
+npm run deploy:dry   # 预检 bundle、根配置与 RELAY 绑定
+npm run deploy       # 发布到 https://telegram-web-cloudflare-workers.<你的子域>.workers.dev
 # 查看地址
-npx wrangler deployments list
+npx wrangler deployments list --config ../wrangler.toml
 ```
 
 #### 4. 绑定自定义域名（可选）
@@ -125,12 +125,14 @@ npx wrangler deployments list
 
 ---
 
-### 方式三：Cloudflare 控制台手动（不装 Wrangler）
+### 方式三：Cloudflare 控制台连接 Git（不装 Wrangler）
 
-1. 打开 [dash.cloudflare.com → Workers & Pages → Create](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create) → **Create Worker** → 取名 `telegram-web-proxy` → **Deploy**
-2. 进入该 Worker → **Settings → Variables** → **Add variable** → 类型选 **Secret**，`PROXY_SECRET` 粘贴密钥 → **Save and deploy**
-3. 本地把本仓库 `app/src/` 5 个文件打包上传：点击 **Edit code** → 将 `app/src/index.js` 等内容粘贴/上传（或通过 **Import from Git** 直接连接你的 GitHub 仓库，Cloudflare 会自动从 `app/wrangler.toml` 读取配置）
-4. 保存后访问 `https://<your-worker>.<subdomain>.workers.dev/healthz` 验证
+1. 先 Fork 仓库，再打开 [Workers & Pages → Create](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create) → **Import from Git**，选择自己的 Fork。
+2. 项目路径使用仓库根目录 `/`，部署命令使用 `npx wrangler deploy`；根 `wrangler.toml` 会声明 `RELAY` binding 与 SQLite DO migration。
+3. 在构建配置的 Secrets 中添加 `PROXY_SECRET`，然后部署。
+4. 访问 `https://<your-worker>.<subdomain>.workers.dev/healthz` 验证。
+
+> 不支持只在在线编辑器粘贴 `app/src/*.js`：那样不会自动创建 Durable Object binding 和 migration。
 
 ---
 
@@ -140,20 +142,19 @@ npx wrangler deployments list
 
 ```bash
 curl https://<你的host>/healthz
-# {"ok":true,"service":"telegram-web-proxy-canary"}
-# 或浏览器打开 https://<你的host>/ 应看到 Telegram WEB Proxy canary
+# {"ok":true,"service":"telegram-web-proxy"}
+# 或浏览器打开 https://<你的host>/ 应看到 Telegram WEB Proxy
 ```
 
 #### 能力验证（浏览器）
 
-1. 本地计算 `capability`（或用探针自动算）：
+1. 在 `app` 目录中计算 `capability`（或用探针自动算）：
 
 ```js
-import { createHmac } from 'node:crypto';
+import { computeCapability } from './src/capability.js';
 const host = '<你的host>'; // 如 telegram-web-proxy.xxx.workers.dev
 const secretHex = '<你的PROXY_SECRET>';
-const cap = createHmac('sha256', Buffer.from(secretHex,'hex'))
-  .update(`tdesktop-web-proxy-bridge-v1\n${host}`).digest('base64url');
+const cap = computeCapability(host, secretHex);
 console.log(`https://${host}/?bridge=${cap}`);
 ```
 
@@ -163,9 +164,18 @@ console.log(`https://${host}/?bridge=${cap}`);
 
 ```bash
 # 在 app 目录下
-TASK_PROXY_SECRET=<你的PROXY_SECRET> npm run probe
+TASK_PROXY_SECRET=<你的PROXY_SECRET> TASK_PROXY_HOST=<你的host> npm run probe
+# 等价：TASK_PROXY_SECRET=<你的PROXY_SECRET> npm run probe -- https://<你的host>
 # 预期: {"result":"public-respq-pass","relay":{"ok":true,"constructor":85285459, ...}}
 # 85285459 = 0x05162463 (resPQ)
+```
+
+PowerShell：
+
+```powershell
+$env:TASK_PROXY_SECRET = '<你的PROXY_SECRET>'
+$env:TASK_PROXY_HOST = '<你的host>'
+npm run probe
 ```
 
 该探针会在你自己的载体上完成 `OPEN → MTProxy init → req_pq_multi → resPQ`，证明四路 CTR 加解密完全正确。
@@ -174,14 +184,15 @@ TASK_PROXY_SECRET=<你的PROXY_SECRET> npm run probe
 
 | 现象 | 原因 |
 |---|---|
-| `bridge-failed` | `TASK_PROXY_SECRET` 与 Cloudflare 上 `PROXY_SECRET` 不一致，或 host 拼错 |
+| `TASK_PROXY_HOST ... required` | 未提供自己的部署 host；设置 `TASK_PROXY_HOST` 或把 HTTPS host 作为 CLI 参数 |
+| `bridge-failed` | `TASK_PROXY_SECRET` 与 Cloudflare 上 `PROXY_SECRET` 不一致，或 `TASK_PROXY_HOST` 拼错 |
 | `session-failed` | 桥接页 bootstrap 过期（120s），重新打开 `/?bridge=...` |
 | `public-respq-fail` / 超时 | 出站 Telegram WSS 被网络拦截，等待 20s 后重试；检查 `wrangler tail` 日志 |
 
 实时日志：
 
 ```bash
-npx wrangler tail   # 需 RELAY_DEBUG=1 才有详细 relay 日志
+npx wrangler tail --config ../wrangler.toml   # 需 RELAY_DEBUG=1 才有详细 relay 日志
 # 或控制台: Workers → 你的 Worker → Logs → Tail
 ```
 
@@ -190,13 +201,15 @@ npx wrangler tail   # 需 RELAY_DEBUG=1 才有详细 relay 日志
 ## 在 Telegram Desktop 中使用
 
 > 基线：**Telegram Desktop v7.1.2**（`tdesktop` 固定提交已验证）。官方 Android `DrKLO/Telegram` 与 iOS 在核查的提交中未包含 WEB Proxy 实现，请以 Desktop 为准。
+>
+> 以下是当前实验性接入步骤；真实 Desktop 文本、媒体和文件 E2E 尚未形成通过证据。
 
 1. 浏览器打开 `https://<你的host>/?bridge=<capability>`（上一步算出的完整链接），保持标签页打开
 2. Telegram Desktop：**设置 → 数据和存储 → 代理 → 添加代理 → WEB Proxy**
 3. 填入：
    - **主机**：`<你的host>`（不含 `https://`，如 `telegram-web-proxy.xxx.workers.dev`）
    - **密钥**：与 `PROXY_SECRET` 完全相同的 hex（`dd` 前缀如有也填入）
-4. 点击添加并启用，状态应变为 **已连接**，Saved Messages 可收发文本/图片/文件
+4. 点击添加并启用；当前验收目标是状态变为 **已连接**，再依次验证 Saved Messages 文本、图片和文件，结果必须单独记录，不能由单元测试代替
 
 > 桥接页通过 `postMessage` + `tproxy-v1.<session-token>` 建立 `wss://<host>/api/v1/ws`，`HELLO(0x10)` → `WELCOME(0x11)` 后即进入多路复用。
 
@@ -208,61 +221,66 @@ npx wrangler tail   # 需 RELAY_DEBUG=1 才有详细 relay 日志
 |---|---|---|
 | `PROXY_SECRET` | `wrangler secret` / 控制台 Secret | 32 位 hex 或 `dd`+32 位，唯一凭证 |
 | `RELAY_DEBUG` | `wrangler vars` / 控制台 Variable | `1` 开启详细中继日志（`wrangler tail` 可见） |
-| `USE_HIBERNATION` | DO 环境 | `1` 启用休眠 API（密码状态仍在内存，驱逐后流关闭重建） |
 
-`app/wrangler.toml` / `wrangler.toml` 默认：
-
-```toml
-name = "telegram-web-cloudflare-workers"
-main = "src/index.js" # 根 wrangler.toml 为 app/src/index.js
-compatibility_date = "2026-08-25"
-compatibility_flags = ["nodejs_compat"]
-```
+根目录 [`wrangler.toml`](wrangler.toml) 是部署、本地开发、运行时测试与 CI 的唯一 Wrangler 配置来源；`app/package.json` 与 `app/vitest.config.js` 均显式引用它。完整 binding、migration、兼容日期和日志策略直接以该文件为准。
 
 ---
 
 ## 本地开发与验证
 
 ```bash
-# 单元测试（26 app + 25 validation）
+# 可复现安装
+npm --prefix app ci
+
+# 单元 / Workers runtime / 固定上游验证
 npm --prefix app test
+npm --prefix app run test:runtime
 npm --prefix validation test
+npm --prefix app run lint
 
 # 本地 Cloudflare 运行时
 npm --prefix app run dev
-# → http://127.0.0.1:8792  (healthz / bridge / WSS 均可用)
+# → http://127.0.0.1:8792；healthz/普通首页可直接访问
+# capability 依赖公共 hostname；完整 bridge/session/WSS 本地合同由 test:runtime 覆盖
 
-# 本地探针
-TASK_PROXY_SECRET=<hex> node app/scripts/public-relay-probe.mjs
+# 已部署 Worker 的公网探针
+TASK_PROXY_SECRET=<hex> TASK_PROXY_HOST=<你的host> npm --prefix app run probe
 ```
 
-项目结构：
+### 项目结构
 
 ```
 app/
   src/
+    capability.js     # capability 计算、主机规范化与常量时间校验
     index.js          # Worker 路由 + RelayDO
     protocol.js       # WEB Proxy 帧编解码
     mtproxy.js        # MTProxy 解析 / 直连 init / AES-CTR
     relay.js          # 有界多路中继 + Telegram WSS
     mtproto-probe.js  # req_pq_multi → resPQ 辅助
-  test/               # 26 项产品+中继+加解密测试
-  wrangler.toml
+  test/               # 协议、产品、中继、加解密与配置单元测试
+  runtime-test/       # 真实 workerd capability/session/WebSocket 测试
+  scripts/            # syntax checker 与公网 resPQ probe
+  package-lock.json   # CI 可复现依赖
+shared/
+  telegram-dc.js      # Telegram DC → 官方 WSS 主机的唯一映射
 validation/
-  src/ / test/ / scripts/   # 上游固定版夹具与公网 WSS 探针
+  src/ / test/ / scripts/   # 固定上游、配置、parity 与公网 WSS 验证
   cloudflare-probe/         # 最小 Free 运行时探针
-docs/                       # 架构与核实记录
+wrangler.toml               # 唯一 Wrangler 配置；所有部署与测试入口显式引用
 ```
 
 ---
 
 ## 安全模型
 
-- 密钥与令牌：`randomBytes(32)` → `base64url` 43 字符，入库前 SHA-256 哈希，**永不进日志**
+- 密钥与令牌：`randomBytes(32)` → `base64url` 43 字符；lookup key 使用 SHA-256；原始 session token 仅在活跃内存和响应中存在
 - 能力比较：`timingSafeEqual` + 规范化主机名
 - 主机规范化：`domainToASCII`、小写、标签校验，拒绝 IP/纯数字 TLD/裸主机
 - 帧校验：未知类型、非法流 ID、超大载荷 → 立即 `1002` 关闭载体
 - 无载荷持久化：`bootstrap / session / MTProto 字节` 绝不写入 Durable Storage
+- 日志：关闭会记录完整 URL/query 的 invocation logs；自定义 relay 日志不含 secret、token 或 payload
+- 资源边界：DO 级共享 pending/outstanding byte+item 预算、bootstrap/session 容量、4 路拨号 semaphore
 - 桥接页 CSP：`default-src 'none'`、`script-src 'nonce-…'`、`frame-ancestors http://127.0.0.1:*`（Desktop WebView）、`sandbox allow-same-origin allow-scripts`
 
 ---
@@ -272,7 +290,8 @@ docs/                       # 架构与核实记录
 - 不支持语音/视频通话（UDP）— WEB Proxy v1 范围外
 - 个人单用户使用，不做多租户/管理后台/付费扩容
 - 不支持 `ee` TLS 伪装密钥与任意上游目标选择
-- 活跃密码状态在内存，DO 驱逐或上游 `1006` 会关闭流 — 客户端重连（Telegram 自动）
+- 活跃 cipher 状态只在内存；明确使用 standard WebSocket，不支持通过 hibernation 恢复 cipher；DO 驱逐或上游 `1006` 会关闭整个 session
+- Cloudflare outbound WebSocket `send()` 不提供 drain/ack；应用队列已严格有界，但大文件可靠性仍需真实 soak 验证
 - `websocket-lanes` 与 raw-TCP 回退为 deferred，仅在单载体 HOL/吞吐或 WSS 兼容门失败时启用
 
 ---
@@ -280,7 +299,7 @@ docs/                       # 架构与核实记录
 ## 常见问题
 
 **Q: 免费额度够用吗？**  
-A: 单 128 MB DO 全天 11k GB-s 占 85%，个人日常（非 7×24 满速）完全够用。避免每 64 KiB 单独刷一条 WS 消息，保持载体批接近 2 MiB。
+A: 单 128 MB DO 全天理论值约 11.06k GB-s，占 13k 日额度约 85%；剩余空间较小，且 incoming WebSocket message 计费取决于真实 batching。必须以部署后的 analytics/24h soak 判定，不能仅凭理论值承诺“够用”。
 
 **Q: 用 `workers.dev` 还是自定义域名？**  
 A: 均可。`workers.dev` 零成本即开；自定义域名需 Cloudflare 托管域，但更稳定、能力 host 更可控。
@@ -292,12 +311,12 @@ A: 依次检查：`PROXY_SECRET` 是否一致（含 `dd`）、`host` 是否规�
 
 ## 文档索引
 
-- [`docs/architecture.md`](docs/architecture.md) — 详细设计与硬约束
-- [`docs/verification.md`](docs/verification.md) — 已验证什么、如何验证
-- [`COMPLETE_PRODUCT_GOAL.md`](COMPLETE_PRODUCT_GOAL.md) — 五门完成定义
-- [`PLAN_VERIFICATION.md`](PLAN_VERIFICATION.md) — 对原计划的 1200 行审计
-- [`DEPLOYMENT_GOAL.md`](DEPLOYMENT_GOAL.md) / [`VALIDATION_GOAL.md`](VALIDATION_GOAL.md) — 分阶段目标
-- `app/test/` 与 `validation/test/` — 可执行规格
+- [`app/test/`](app/test/) — Node 单元与回归规格
+- [`app/runtime-test/`](app/runtime-test/) — 真实 Workers runtime carrier/session 规格
+- [`validation/test/`](validation/test/) — 固定上游、Cloudflare probe 与配置 parity 规格
+- [`app/src/capability.js`](app/src/capability.js) — capability 与公开主机名规则的生产唯一来源
+- [`shared/telegram-dc.js`](shared/telegram-dc.js) — Telegram DC → WSS 主机映射的唯一来源
+- [`wrangler.toml`](wrangler.toml) — 部署、本地开发、运行时测试与 CI 的唯一 Wrangler 配置
 
 ---
 
@@ -340,4 +359,3 @@ A: 依次检查：`PROXY_SECRET` 是否一致（含 `dd`）、`host` 是否规�
 ## 许可证
 
 MIT — 见 [LICENSE](LICENSE)
-
