@@ -12,6 +12,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { DurableObject } from 'cloudflare:workers';
 
 import { matchesBridgeCapability } from './capability.js';
+import { parseProxySecret } from './mtproxy.js';
+import { bridgePage } from './bridge.js';
 import { decodeFrames, encodeFrame, FRAME_TYPES } from './protocol.js';
 import {
   DialLimiter,
@@ -71,32 +73,47 @@ function validApiRequest(request, url) {
   return false;
 }
 
-async function readBodyAtMost(request, maxBytes) {
+export async function readBodyAtMost(request, maxBytes, timeoutMs = 10_000) {
   const length = request.headers.get('Content-Length');
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes)) {
-    try { await request.body?.cancel('body too large'); } catch {}
+    void request.body?.cancel('body too large').catch(() => {});
     return null;
   }
   if (!request.body) return Buffer.alloc(0);
   const reader = request.body.getReader();
-  const chunks = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const bytes = Buffer.from(value);
-      total += bytes.length;
-      if (total > maxBytes) {
-        try { await reader.cancel('body too large'); } catch {}
-        return null;
+  let timer;
+  const read = async () => {
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return Buffer.concat(chunks, total);
+        if (total + value.byteLength > maxBytes) {
+          void reader.cancel('body too large').catch(() => {});
+          return null;
+        }
+        const bytes = Buffer.from(value);
+        total += bytes.length;
+        chunks.push(bytes);
       }
-      chunks.push(bytes);
-    }
+    } catch { return null; }
+  };
+  try {
+    return await Promise.race([read(), new Promise(resolve => {
+      timer = setTimeout(() => {
+        resolve(null);
+        void reader.cancel('body deadline exceeded').catch(() => {});
+      }, timeoutMs);
+    })]);
   } finally {
+    clearTimeout(timer);
     reader.releaseLock();
   }
-  return Buffer.concat(chunks, total);
+}
+
+function hasRuntimeSecret(env) {
+  try { parseProxySecret(env.PROXY_SECRET); return true; } catch { return false; }
 }
 
 function randomToken() {
@@ -114,155 +131,6 @@ export function parseCarrierProtocol(protocol) {
   return { token };
 }
 
-function bridgePage(host, bootstrap, nonce) {
-  const origin = `https://${host}`;
-  const csp = [
-    "default-src 'none'",
-    'base-uri \'none\'',
-    'connect-src \'self\' wss://' + host,
-    'frame-ancestors http://127.0.0.1:*',
-    "script-src 'nonce-" + nonce + "'",
-    "style-src 'none'",
-    'object-src \'none\'',
-    'worker-src \'none\'',
-    'sandbox allow-same-origin allow-scripts',
-  ].join('; ');
-  const body = `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connection</title></head>
-<body>
-<script nonce="${nonce}">
-(()=>{
-'use strict';
-const relayOrigin=${JSON.stringify(origin)},bootstrap=${JSON.stringify(bootstrap)};
-const fragment=location.hash,androidNonce=/^#android=([A-Za-z0-9_-]{43})$/.exec(fragment)?.[1]||'';
-history.replaceState(null,'',location.pathname);
-let initialized=false,closed=false,port=null,sessionToken='',socket=null,creating=false;
-const MAX_PENDING_BYTES=32*1024*1024,MAX_PENDING_ITEMS=4096,pending=[];
-const SESSION_CREATE_BUDGET_MS=90000,SESSION_RETRY_MAX_MS=4000;
-let pendingBytes=0;
-const status=state=>{if(port&&!closed)port.postMessage({t:'status',state})};
-const requestOptions=(method,token,body,keepalive=false)=>({
- method,body,keepalive,mode:'same-origin',credentials:'omit',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer',
- headers:Object.assign(token?{Authorization:'Bearer '+token}:{},body?{'Content-Type':'application/octet-stream'}:{})
-});
-const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-function sessionRetryDelay(response,attempt){
- const header=response?.headers.get('Retry-After');
- const seconds=header===null||header===undefined||header===''?NaN:Number(header);
- if(Number.isFinite(seconds)&&seconds>=0)return Math.min(SESSION_RETRY_MAX_MS,seconds*1000);
- return Math.min(SESSION_RETRY_MAX_MS,250*(2**attempt));
-}
-async function requestSession(first){
- const started=Date.now();let attempt=0;
- for(;;){
-  let response;
-  try{response=await fetch(relayOrigin+'/api/v1/session',requestOptions('POST',bootstrap,first))}
-  catch(error){
-   const delay=sessionRetryDelay(null,attempt++);
-   if(Date.now()-started+delay>SESSION_CREATE_BUDGET_MS)throw error;
-   await sleep(delay);continue
-  }
-  if(response.status!==503)return response;
-  const delay=sessionRetryDelay(response,attempt++);
-  try{await response.body?.cancel()}catch(error){}
-  if(Date.now()-started+delay>SESSION_CREATE_BUDGET_MS)return response;
-  await sleep(delay);
- }
-}
-function fail(){
- if(closed)return;
- status('failed');
- if(port)port.postMessage({t:'close'});
- close(true);
-}
-function close(notifyServer){
- if(closed)return;
- closed=true;
- if(socket)try{socket.close()}catch(error){}
- if(notifyServer&&sessionToken)fetch(relayOrigin+'/api/v1/session',requestOptions('DELETE',sessionToken,null,true)).catch(()=>{});
- pending.length=0;pendingBytes=0;
- if(port)port.close();
-}
-function queueCarrier(data){
- if(!(data instanceof ArrayBuffer)||!data.byteLength){fail();return}
- if(!socket||socket.readyState!==WebSocket.OPEN){
-  if(pendingBytes+data.byteLength>MAX_PENDING_BYTES||pending.length>=MAX_PENDING_ITEMS){fail();return}
-  pending.push(data);pendingBytes+=data.byteLength;return
- }
- if(socket.bufferedAmount+data.byteLength>MAX_PENDING_BYTES){fail();return}
- try{socket.send(data)}catch(error){fail()}
-}
-function openWebSocket(){
- return new Promise((resolve,reject)=>{
-  const target=relayOrigin.replace(/^https:/,'wss:')+'/api/v1/ws';
-  socket=new WebSocket(target,'tproxy-v1.'+sessionToken);
-  socket.binaryType='arraybuffer';
-  socket.onopen=()=>resolve();
-  socket.onmessage=event=>{
-   if(!(event.data instanceof ArrayBuffer)||!event.data.byteLength){fail();return}
-   port.postMessage({t:'traffic',up:0,down:event.data.byteLength});
-   port.postMessage(event.data,[event.data]);
-   status('connected');
-  };
-  socket.onerror=()=>reject(new Error('websocket failed'));
-  socket.onclose=()=>{if(!closed)fail()};
- });
-}
-async function createSession(first){
- try{
-  status('connecting');
-  const response=await requestSession(first);
-  if(response.status!==200||response.headers.get('X-Carrier-Mode')!=='websocket')throw new Error('session rejected');
-  sessionToken=response.headers.get('X-Session-Token')||'';
-  if(!/^[A-Za-z0-9_-]{43}$/.test(sessionToken))throw new Error('missing session token');
-  const welcome=await response.arrayBuffer();
-  if(closed)return;
-  port.postMessage(welcome,[welcome]);
-  await openWebSocket();
-  if(closed)return;
-  status('connected');
-  for(const data of pending.splice(0)){pendingBytes-=data.byteLength;queueCarrier(data);if(closed)break}
- }catch(error){fail()}
-}
-function activatePort(nextPort){
- initialized=true;port=nextPort;
- port.onmessage=message=>{
-  const data=message.data;
-  if(data instanceof ArrayBuffer){
-   if(!creating){creating=true;createSession(data)}else queueCarrier(data);
-  }else if(data&&data.t==='close')close(true);
- };
- port.start();status('connecting');
-}
-addEventListener('message',event=>{
- if(initialized||event.source!==parent||event.data===null||typeof event.data!=='object')return;
- const keys=Object.keys(event.data).sort();
- if(keys.length!==2||keys[0]!=='t'||keys[1]!=='v'||event.data.t!=='tproxy-init'||event.data.v!==1||event.ports.length!==1)return;
- let source;try{source=new URL(event.origin)}catch(error){return}
- if(source.protocol!=='http:'||source.hostname!=='127.0.0.1'||!source.port||source.origin!==event.origin)return;
- activatePort(event.ports[0]);
-});
-const androidBridge=globalThis.TelegramWebProxy;
-if(!initialized&&androidNonce&&androidBridge&&typeof androidBridge.postMessage==='function'){
- const androidPort={onmessage:null,start(){},close(){androidBridge.onmessage=null},postMessage(value){
-  androidBridge.postMessage(value instanceof ArrayBuffer?value:JSON.stringify(value));
- }};
- androidBridge.onmessage=event=>{
-  let data=event.data;if(typeof data==='string'){try{data=JSON.parse(data)}catch(error){return}}
-  if(androidPort.onmessage)androidPort.onmessage({data});
- };
- activatePort(androidPort);
- androidBridge.postMessage(JSON.stringify({t:'tproxy-android-init',v:1,nonce:androidNonce}));
-}
-addEventListener('pagehide',()=>close(true),{once:true});
-})();
-</script>
-</body>
-</html>`;
-  return { body, csp };
-}
-
 function validRootCapability(request, env) {
   const url = new URL(request.url);
   if (url.pathname !== '/' || request.method !== 'GET') return false;
@@ -276,6 +144,17 @@ export async function handleRequest(request, env) {
   const url = new URL(request.url);
   if (url.pathname === '/healthz' && request.method === 'GET') {
     return json({ ok: true, service: 'telegram-web-proxy' });
+  }
+  if (url.pathname === '/readyz' && request.method === 'GET') {
+    let ok = false;
+    if (hasRuntimeSecret(env) && typeof env.RELAY?.getByName === 'function') {
+      try {
+        const response = await env.RELAY.getByName(PROXY_OBJECT_NAME).fetch(new Request('https://relay/internal/readyz'));
+        ok = response.ok;
+        void response.body?.cancel().catch(() => {});
+      } catch {}
+    }
+    return json({ ok, service: 'telegram-web-proxy' }, { status: ok ? 200 : 503 });
   }
   if (validRootCapability(request, env)) {
     const bootstrap = randomToken();
@@ -331,6 +210,10 @@ export class RelayDO extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === '/internal/readyz') {
+      const ok = hasRuntimeSecret(this.env);
+      return json({ ok }, { status: ok ? 200 : 503 });
+    }
     if (url.pathname === '/internal/bootstrap') return this.issueBootstrap(request);
     if (url.pathname === '/api/v1/session') return this.session(request);
     if (url.pathname === '/api/v1/ws') return this.attachWebSocket(request);
@@ -368,7 +251,8 @@ export class RelayDO extends DurableObject {
     const bootstrap = this.bootstraps.get(hash);
     if (!bootstrap || Date.now() - bootstrap.createdAt > BOOTSTRAP_TTL_MS) return notFound();
     const body = await readBodyAtMost(request, 64);
-    if (body === null) return notFound();
+    if (body === null || this.bootstraps.get(hash) !== bootstrap
+      || Date.now() - bootstrap.createdAt > BOOTSTRAP_TTL_MS) return notFound();
     let frames;
     try { frames = decodeFrames(body); } catch { return notFound(); }
     if (frames.length !== 1 || frames[0].type !== FRAME_TYPES.HELLO || frames[0].streamId !== 0 || Buffer.compare(frames[0].payload, Buffer.of(1)) !== 0) return notFound();
@@ -435,13 +319,16 @@ export class RelayDO extends DurableObject {
     const [client, server] = Object.values(pair);
     session.socket = server;
     const dialTelegram = this.env.__dialTelegram
-      ?? ((target) => openTelegramWss(target, { fetchImpl: this.env.__fetch ?? fetch }));
+      ?? ((target, options) => openTelegramWss(target, { ...options, fetchImpl: this.env.__fetch ?? fetch }));
     session.engine = new RelayEngine({
       secret: this.env.PROXY_SECRET,
       randomBytes: this.env.__randomBytes,
       dialTelegram,
       sendCarrier: (frame) => server.send(frame),
-      closeCarrier: (code, reason) => server.close?.(code, reason),
+      closeCarrier: (code, reason) => {
+        try { server.close?.(code, reason); }
+        finally { this.disposeSession(session, reason, false); }
+      },
       debug: this.env.RELAY_DEBUG === '1',
       budget: this.relayBudget,
       dialLimiter: this.dialLimiter,
@@ -449,7 +336,7 @@ export class RelayDO extends DurableObject {
     this.sockets.set(server, session);
     try { server.binaryType = 'arraybuffer'; } catch {}
     if (typeof server.accept === 'function') {
-      server.accept({ allowHalfOpen: true });
+      server.accept();
       server.addEventListener?.('message', (event) => {
         const idle = this.webSocketMessage(server, event.data);
         if (idle && typeof this.ctx.waitUntil === 'function') this.ctx.waitUntil(idle);
@@ -486,17 +373,17 @@ export class RelayDO extends DurableObject {
     } catch (error) {
       const msg = String(error?.message ?? error).slice(0, 80);
       if (this.env.RELAY_DEBUG === '1') console.log(JSON.stringify({ diag: 'ws-decode-fail', error: msg }));
-      socket.close?.(1002, msg || 'protocol error');
+      session.engine.protocolError(msg || 'protocol error');
       return;
     }
     for (const frame of frames) {
       if (frame.streamId === 0) {
-        socket.close?.(1002, 'unsupported frame');
+        session.engine.protocolError('unsupported frame');
         return work.length ? Promise.all(work) : undefined;
       }
       const pending = session.engine.handleFrame(frame);
       if (pending) work.push(pending);
-      if (session.engine.carrierClosed) {
+      if (!session.engine || session.engine.carrierClosed) {
         return work.length ? Promise.all(work) : undefined;
       }
     }
@@ -514,24 +401,24 @@ export class RelayDO extends DurableObject {
   detach(socket) {
     const session = this.sockets.get(socket);
     if (!session) return;
-    this.disposeSession(session, 'carrier detached', false);
+    this.disposeSession(session, 'carrier detached');
   }
 
   disposeSession(session, reason, closeSocket = true) {
-    session.engine?.shutdown(reason);
+    const engine = session.engine, socket = session.socket;
     session.engine = null;
-    const socket = session.socket;
     session.socket = null;
-    if (socket) {
-      this.sockets.delete(socket);
-      if (closeSocket) {
-        try { socket.close?.(1000, reason); } catch { try { socket.close?.(); } catch {} }
-      }
-    }
+    if (socket) this.sockets.delete(socket);
     this.sessions.delete(session.hash);
     this.sessions.delete(session.bootstrapHash);
     this.sessionSet.delete(session);
     this.bootstraps.delete(session.bootstrapHash);
+    try { engine?.shutdown(reason); }
+    finally {
+      if (closeSocket) {
+        try { socket?.close?.(1000, reason); } catch { try { socket?.close?.(); } catch {} }
+      }
+    }
   }
 
   flushRelayDown() {

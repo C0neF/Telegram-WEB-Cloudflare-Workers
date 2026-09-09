@@ -67,7 +67,7 @@ export function decodeFrames(input) {
   let bytes;
   if (input instanceof ArrayBuffer) bytes = Buffer.from(new Uint8Array(input));
   else if (ArrayBuffer.isView(input)) bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
-  else bytes = Buffer.from(input);
+  else throw new TypeError('carrier message must be binary');
   if (bytes.length > MAX_CARRIER_BATCH) throw new Error('carrier batch too large');
   const frames = [];
   let offset = 0;

@@ -75,6 +75,7 @@ async function runBridgeSessionScript(html, fetchImpl, first) {
   const sockets = [];
   const delays = [];
   const events = [];
+  const deadlines = new Map();
   const parent = {};
   class BrowserSocket {
     static OPEN = 1;
@@ -99,18 +100,20 @@ async function runBridgeSessionScript(html, fetchImpl, first) {
   }
   const context = {
     ArrayBuffer,
+    AbortController,
     URL,
     WebSocket: BrowserSocket,
     addEventListener(type, listener) {
       listeners.set(type, listener);
     },
-    clearTimeout() {},
+    clearTimeout(id) { deadlines.delete(id); },
     fetch: fetchImpl,
     history: { replaceState() {} },
     location: { hash: '', pathname: '/' },
     parent,
     queueMicrotask,
     setTimeout(callback, delay) {
+      if (delay > 4000) { const id = {}; deadlines.set(id, callback); return id; }
       delays.push(delay);
       queueMicrotask(callback);
       return 1;
@@ -137,7 +140,7 @@ async function runBridgeSessionScript(html, fetchImpl, first) {
     await new Promise((resolve) => setImmediate(resolve));
     if (posted.some((value) => value instanceof ArrayBuffer)) break;
   }
-  return { delays, events, posted, sockets };
+  return { delays, events, posted, sockets, deadlines, port };
 }
 
 test('invalid bridge query stays on the ordinary public response', async () => {
@@ -640,7 +643,7 @@ test('carrier standard WebSocket path keeps session state in memory for active u
       },
     }));
     assert.equal(response.status, 101);
-    assert.deepEqual(accepted, [{ allowHalfOpen: true }]);
+    assert.deepEqual(accepted, [undefined]);
   } finally {
     globalThis.WebSocketPair = previous;
   }
@@ -886,4 +889,36 @@ test('carrier forwards OPEN and MTProxy DATA into an injected Telegram WSS diale
   } finally {
     globalThis.WebSocketPair = previous;
   }
+});
+
+test('bridge aborts a stalled session fetch at the total deadline', async () => {
+  const { env } = makeRuntime();
+  const page = await handleRequest(new Request(`https://${HOST}/?bridge=${await capabilityFor()}`), env);
+  let signal;
+  const result = await runBridgeSessionScript(await page.text(), (_url, options) => {
+    signal = options.signal;
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  }, hello().buffer);
+  assert.equal(signal.aborted, false);
+  for (const callback of result.deadlines.values()) callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(signal.aborted, true);
+  assert.ok(result.posted.some(value => value?.t === 'close'));
+  assert.equal(result.sockets.length, 0);
+});
+
+test('bridge client close aborts pending session creation and prevents retries', async () => {
+  const { env } = makeRuntime();
+  const page = await handleRequest(new Request(`https://${HOST}/?bridge=${await capabilityFor()}`), env);
+  let signal, calls = 0;
+  const result = await runBridgeSessionScript(await page.text(), (_url, options) => {
+    calls++;
+    signal = options.signal;
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  }, hello().buffer);
+  result.port.onmessage({ data: { t: 'close' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(signal.aborted, true);
+  assert.equal(calls, 1);
+  assert.equal(result.deadlines.size, 0);
 });

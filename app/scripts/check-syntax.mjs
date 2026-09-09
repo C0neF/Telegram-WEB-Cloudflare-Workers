@@ -10,6 +10,10 @@ function javascriptFiles(directory) {
   });
 }
 
-const files = ['src', 'test', 'runtime-test', 'scripts'].flatMap(javascriptFiles);
+const files = [
+  'src', 'test', 'runtime-test', 'scripts', 'test-support', '../shared',
+  '../validation/src', '../validation/test', '../validation/scripts',
+  '../validation/cloudflare-probe/src', '../validation/cloudflare-probe/test',
+].flatMap(javascriptFiles);
 for (const file of files) execFileSync(process.execPath, ['--check', file], { stdio: 'inherit' });
 console.log(`syntax ok: ${files.length} files`);

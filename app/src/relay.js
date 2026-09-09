@@ -31,18 +31,33 @@ const DEFAULT_MAX_TOMBSTONES = 4096;
 const DEFAULT_MAX_CONCURRENT_DIALS = 4;
 
 export class DialLimiter {
-  constructor(maxConcurrent = DEFAULT_MAX_CONCURRENT_DIALS) {
-    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
-      throw new RangeError('maxConcurrent must be a positive integer');
+  constructor(maxConcurrent = DEFAULT_MAX_CONCURRENT_DIALS, maxQueued = 256) {
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1
+      || !Number.isInteger(maxQueued) || maxQueued < 0) {
+      throw new RangeError('dial limits must be bounded nonnegative integers with positive concurrency');
     }
     this.maxConcurrent = maxConcurrent;
+    this.maxQueued = maxQueued;
     this.active = 0;
     this.queue = [];
   }
 
-  run(task) {
+  run(task, { signal } = {}) {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    if (this.active >= this.maxConcurrent && this.queue.length >= this.maxQueued) {
+      return Promise.reject(new Error('dial queue full'));
+    }
     return new Promise((resolve, reject) => {
-      this.queue.push({ task, resolve, reject });
+      const item = { task, resolve, reject, signal, cancel: null };
+      item.cancel = () => {
+        const index = this.queue.indexOf(item);
+        if (index < 0) return;
+        this.queue.splice(index, 1);
+        signal.removeEventListener('abort', item.cancel);
+        reject(signal.reason);
+      };
+      signal?.addEventListener('abort', item.cancel, { once: true });
+      this.queue.push(item);
       this.drain();
     });
   }
@@ -50,16 +65,12 @@ export class DialLimiter {
   drain() {
     while (this.active < this.maxConcurrent && this.queue.length) {
       const item = this.queue.shift();
+      item.signal?.removeEventListener('abort', item.cancel);
       this.active += 1;
+      // In-flight work owns cancellation; don't release its slot before it settles.
       void Promise.resolve().then(item.task).then(
-        (value) => {
-          item.resolve(value);
-          this.finish();
-        },
-        (error) => {
-          item.reject(error);
-          this.finish();
-        },
+        value => { item.resolve(value); this.finish(); },
+        error => { item.reject(error); this.finish(); },
       );
     }
   }
@@ -113,7 +124,7 @@ export class RelayBudget {
     if (this.outstandingBytes < 0 || this.outstandingItems < 0) {
       throw new Error('relay outstanding budget underflow');
     }
-    this.onOutstandingAvailable?.();
+    if (bytes || items) this.onOutstandingAvailable?.();
   }
 }
 
@@ -122,6 +133,9 @@ export async function openTelegramWss(target, options = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const controller = new AbortController();
+  const abort = () => controller.abort(options.signal.reason);
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) abort();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(`https://${target.host}/apiws`, {
@@ -131,8 +145,14 @@ export async function openTelegramWss(target, options = {}) {
       },
       signal: controller.signal,
     });
+    if (controller.signal.aborted) {
+      closeSocket(response.webSocket, 1000, 'dial cancelled');
+      throw controller.signal.reason;
+    }
     const protocol = response.headers.get('Sec-WebSocket-Protocol');
     if (response.status !== 101 || protocol !== 'binary' || !response.webSocket) {
+      closeSocket(response.webSocket, 1002, 'invalid handshake');
+      void response.body?.cancel().catch(() => {});
       throw new Error(`Telegram WSS handshake failed: ${response.status}/${protocol ?? 'none'}`);
     }
     const socket = response.webSocket;
@@ -140,10 +160,11 @@ export async function openTelegramWss(target, options = {}) {
     // values. The relay is a byte stream, so force ArrayBuffer delivery before
     // accepting the outbound socket (Cloudflare runtime API contract).
     socket.binaryType = 'arraybuffer';
-    socket.accept?.({ allowHalfOpen: true });
+    socket.accept?.();
     return socket;
   } finally {
     clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -167,7 +188,7 @@ export class RelayEngine {
     this.secret = options.secret;
     this.randomBytes = options.randomBytes;
     this.dialTelegram = options.dialTelegram;
-    this.sendCarrier = options.sendCarrier;
+    this.writeCarrier = options.sendCarrier;
     this.closeCarrier = options.closeCarrier;
     this.dialLimiter = options.dialLimiter ?? new DialLimiter();
     this.initialWindow = options.initialWindow ?? INITIAL_STREAM_WINDOW;
@@ -188,6 +209,9 @@ export class RelayEngine {
     this.maxOutstandingBytes = options.maxOutstandingBytes ?? DEFAULT_MAX_PENDING_BYTES;
     this.maxTombstones = options.maxTombstones ?? DEFAULT_MAX_TOMBSTONES;
     this.streams = new Map();
+    // Lazily allocate a fixed 24-bit ID bitmap (2 MiB per active session).
+    // Recent tombstones are only for late-frame races, not uniqueness.
+    this.usedStreamIds = null;
     this.tombstones = new Set();
     this.tombstoneOrder = [];
     this.tasks = new Set();
@@ -202,19 +226,33 @@ export class RelayEngine {
     if (this.debug) console.log(JSON.stringify({ relay: event, ...details }));
   }
 
+  sendCarrier(frame) {
+    if (this.carrierClosed) return false;
+    try {
+      this.writeCarrier(frame);
+      return true;
+    } catch {
+      this.terminateCarrier(1011, 'carrier write failed');
+      return false;
+    }
+  }
+
   handleFrame(frame) {
     if (this.carrierClosed) return;
     const { type, streamId } = frame;
     const payload = Buffer.from(frame.payload);
-    if (streamId === 0) {
+    if (!Number.isInteger(streamId) || streamId <= 0 || streamId > 0xffffff) {
       this.protocolError('invalid stream-zero frame');
       return;
     }
     if (type === FRAME_TYPES.OPEN) {
-      if (!empty(payload) || this.streams.has(streamId) || this.tombstones.has(streamId)) {
+      const index = streamId >>> 3, mask = 1 << (streamId & 7);
+      if (!empty(payload) || (this.usedStreamIds?.[index] & mask)) {
         this.protocolError('invalid OPEN');
         return;
       }
+      this.usedStreamIds ??= new Uint8Array(1 << 21);
+      this.usedStreamIds[index] |= mask;
       if (this.streams.size >= this.maxStreams) {
         this.rejectStream(streamId);
         return;
@@ -270,6 +308,7 @@ export class RelayEngine {
       direct: null,
       socket: null,
       dialing: false,
+      dialAbort: new AbortController(),
       closed: false,
       preinitCredit: 0,
       clientCredit: this.initialWindow,
@@ -349,38 +388,31 @@ export class RelayEngine {
       host: telegramHostForDc(stream.parsed.dcId),
     };
     this.log('dial-start', { streamId: stream.id, dcId: target.dcId, host: target.host });
+    const signal = stream.dialAbort.signal;
     return this.track(this.dialLimiter.run(async () => {
-      try {
-        if (stream.closed) return;
-        const socket = await this.dialTelegram(target);
-        if (stream.closed) {
-          closeSocket(socket, 1000, 'stream closed');
-          return;
-        }
-        stream.socket = socket;
-        this.log('dial-open', { streamId: stream.id });
-        socket.addEventListener?.('message', (event) => this.handleTelegramData(stream, event.data));
-        socket.addEventListener?.('close', (event) => {
-          this.log('upstream-close', { streamId: stream.id, code: event?.code ?? null });
-          this.failStream(stream, 'Telegram WSS closed');
-        });
-        socket.addEventListener?.('error', () => {
-          this.log('upstream-error', { streamId: stream.id });
-          this.failStream(stream, 'Telegram WSS error');
-        });
-        this.flushUp(stream);
-      } catch {
-        this.log('dial-failed', { streamId: stream.id });
-        this.failStream(stream, 'Telegram WSS dial failed');
-      } finally {
-        stream.dialing = false;
+      if (stream.closed) return;
+      const socket = await this.dialTelegram(target, { signal });
+      if (stream.closed) {
+        closeSocket(socket, 1000, 'stream closed');
+        return;
       }
-    }));
+      stream.socket = socket;
+      this.log('dial-open', { streamId: stream.id });
+      socket.addEventListener?.('message', event => this.handleTelegramData(stream, event.data));
+      socket.addEventListener?.('close', event => {
+        this.log('upstream-close', { streamId: stream.id, code: event?.code ?? null });
+        this.failStream(stream, 'Telegram WSS closed');
+      });
+      socket.addEventListener?.('error', () => this.failStream(stream, 'Telegram WSS error'));
+      this.flushUp(stream);
+    }, { signal }).catch(() => {
+      if (!stream.closed) this.failStream(stream, 'Telegram WSS dial failed');
+    }).finally(() => { stream.dialing = false; }));
   }
 
   flushUp(stream) {
     if (!stream.socket || stream.closed) return;
-    while (stream.pendingUp.length) {
+    while (!stream.closed && stream.pendingUp.length) {
       const item = stream.pendingUp.shift();
       stream.pendingUpBytes -= item.data.length;
       stream.pendingUpItems -= 1;
@@ -394,40 +426,37 @@ export class RelayEngine {
         return;
       }
       stream.clientCredit += item.credit;
-      this.sendCarrier(encodeFrame(
+      if (!this.sendCarrier(encodeFrame(
         FRAME_TYPES.WINDOW,
         stream.id,
         encodeWindow(item.credit),
-      ));
+      ))) return;
     }
   }
 
   handleTelegramData(stream, value) {
     if (stream.closed) return;
-    let encrypted;
-    try {
-      encrypted = Buffer.from(value);
-    } catch {
-      this.log('upstream-nonbinary', { streamId: stream.id });
+    if (!(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) {
       this.failStream(stream, 'non-binary Telegram WSS message');
       return;
     }
-    if (!encrypted.length) return;
-    this.log('upstream-data', { streamId: stream.id, bytes: encrypted.length });
-    const plaintext = stream.direct.telegramRx.update(encrypted);
-    const clientCiphertext = stream.parsed.clientTx.update(plaintext);
-    for (let offset = 0; offset < clientCiphertext.length; offset += this.maxDataChunk) {
-      if (!this.enqueueDown(stream, Buffer.from(
-        clientCiphertext.subarray(offset, offset + this.maxDataChunk),
-      ))) return;
+    // View the incoming buffer, then transform bounded slices instead of making
+    // multiple copies of an entire (potentially 32 MiB) WebSocket message.
+    const encrypted = value instanceof ArrayBuffer ? Buffer.from(value)
+      : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    for (let offset = 0; offset < encrypted.length; offset += this.maxDataChunk) {
+      const plaintext = stream.direct.telegramRx.update(encrypted.subarray(offset, offset + this.maxDataChunk));
+      if (!this.enqueueDown(stream, stream.parsed.clientTx.update(plaintext))) return;
     }
   }
 
   enqueueDown(stream, chunk) {
+    if (stream.closed || this.carrierClosed) return false;
     if (!stream.pendingDown.length
       && this.trySendDown(stream, chunk)) {
       return true;
     }
+    if (stream.closed || this.carrierClosed) return false;
     if (stream.pendingDownBytes + chunk.length > this.maxStreamPendingBytes
       || stream.pendingDownItems + 1 > this.maxStreamPendingItems
       || !this.budget.reserve(chunk.length)) {
@@ -440,7 +469,7 @@ export class RelayEngine {
     this.pendingBytes += chunk.length;
     this.pendingItems += 1;
     this.flushDown(stream);
-    return true;
+    return !stream.closed;
   }
 
   flushDown(stream) {
@@ -457,15 +486,14 @@ export class RelayEngine {
   }
 
   trySendDown(stream, chunk) {
-    if (chunk.length > stream.relayCredit
+    if (stream.closed || this.carrierClosed || chunk.length > stream.relayCredit
       || this.downOutstanding + chunk.length > this.maxOutstandingBytes
       || !this.budget.reserveOutstanding(chunk.length)) return false;
     stream.relayCredit -= chunk.length;
     stream.downOutstanding += chunk.length;
     stream.sentDown.push(chunk.length);
     this.downOutstanding += chunk.length;
-    this.sendCarrier(encodeFrame(FRAME_TYPES.DATA, stream.id, chunk));
-    return true;
+    return this.sendCarrier(encodeFrame(FRAME_TYPES.DATA, stream.id, chunk));
   }
 
   releaseDownOutstanding(stream, amount) {
@@ -487,19 +515,20 @@ export class RelayEngine {
   }
 
   flushAllDown() {
-    for (const stream of this.streams.values()) this.flushDown(stream);
+    if (!this.carrierClosed) for (const stream of this.streams.values()) this.flushDown(stream);
   }
 
   failStream(stream, reason) {
     if (stream.closed) return;
     this.log('stream-fail', { streamId: stream.id, reason });
-    this.sendCarrier(encodeFrame(FRAME_TYPES.CLOSE, stream.id));
     this.closeStream(stream, true, reason);
+    this.sendCarrier(encodeFrame(FRAME_TYPES.CLOSE, stream.id));
   }
 
   closeStream(stream, failed, reason = '') {
     if (stream.closed) return;
     stream.closed = true;
+    stream.dialAbort.abort(new Error('stream closed'));
     closeSocket(stream.socket, failed ? 1011 : 1000, reason.slice(0, 120));
     this.pendingBytes -= stream.pendingUpBytes + stream.pendingDownBytes;
     this.pendingItems -= stream.pendingUpItems + stream.pendingDownItems;
@@ -517,6 +546,10 @@ export class RelayEngine {
     stream.sentDown.length = 0;
     stream.pendingUp.length = 0;
     stream.pendingDown.length = 0;
+    stream.socket = null;
+    stream.parsed = null;
+    stream.direct = null;
+    stream.accumulator = null;
     this.streams.delete(stream.id);
     this.rememberTombstone(stream.id);
   }
@@ -540,17 +573,21 @@ export class RelayEngine {
   }
 
   protocolError(reason) {
-    if (this.debug) console.log(JSON.stringify({ diag: 'protocolError', reason }));
+    this.log('protocolError', { reason });
+    this.terminateCarrier(1002, reason);
+  }
+
+  terminateCarrier(code, reason) {
     if (this.carrierClosed) return;
-    this.carrierClosed = true;
-    for (const stream of [...this.streams.values()]) this.closeStream(stream, true, reason);
-    this.closeCarrier(1002, reason);
+    this.shutdown(reason);
+    try { this.closeCarrier(code, reason); } catch {}
   }
 
   shutdown(reason = 'carrier closed') {
     if (this.carrierClosed) return;
     this.carrierClosed = true;
     for (const stream of [...this.streams.values()]) this.closeStream(stream, false, reason);
+    this.usedStreamIds = null;
   }
 
   track(promise) {

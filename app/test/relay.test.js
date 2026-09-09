@@ -562,7 +562,7 @@ test('fake Telegram WSS completes req_pq_multi -> resPQ through both obfuscation
   assert.deepEqual(parsed.fingerprints, [0x1020304050607080n]);
 });
 
-test('outbound WSS dialer opts into ArrayBuffer binary delivery and half-open proxy close semantics', async () => {
+test('outbound WSS dialer opts into ArrayBuffer binary delivery and automatic close replies', async () => {
   const calls = [];
   const socket = {
     binaryType: 'blob',
@@ -588,5 +588,5 @@ test('outbound WSS dialer opts into ArrayBuffer binary delivery and half-open pr
   );
   assert.equal(opened, socket);
   assert.equal(socket.binaryType, 'arraybuffer');
-  assert.deepEqual(calls, [{ allowHalfOpen: true }]);
+  assert.deepEqual(calls, [undefined]);
 });

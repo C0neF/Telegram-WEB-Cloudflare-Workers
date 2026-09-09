@@ -1,5 +1,5 @@
 # Canonical Wrangler config for one-click deploy, local development, tests, and CI.
-# Cloudflare Deploy runs `npx wrangler deploy` at repo root, so this file stays at the root.
+# Install with `npm --prefix app ci`; deploy with `npm --prefix app run deploy`.
 name = "telegram-web-cloudflare-workers"
 main = "app/src/index.js"
 compatibility_date = "2026-08-25"

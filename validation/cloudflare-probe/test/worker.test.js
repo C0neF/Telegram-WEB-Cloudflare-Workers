@@ -311,3 +311,21 @@ test('lifecycle status exposes a persisted prior run when current in-memory stat
   assert.deepEqual(body.persisted, persisted);
   assert.notEqual(body.bootId, persisted.startBootId);
 });
+
+test('probe parameters reject non-finite, fractional and excessive durations before dialing', async () => {
+  let dialed = false;
+  const probe = new RelayProbe({}, {
+    __dialTelegram: async () => { dialed = true; return { ok: true }; },
+    __openTelegram: async () => { dialed = true; throw new Error('must not dial'); },
+  });
+  for (const suffix of [
+    '/dials?count=NaN', '/dials?count=1.5', '/dials?count=Infinity',
+    '/dials?holdMs=NaN', '/dials?holdMs=-1', '/dials?holdMs=60001',
+    '/outbound-wss?holdMs=Infinity', '/outbound-wss?holdMs=-5',
+    '/lifecycle/start?heartbeatMs=NaN', '/lifecycle/start?heartbeatMs=1.5',
+  ]) {
+    const response = await probe.fetch(new Request(`https://probe/probe${suffix}`));
+    assert.equal(response.status, 400, suffix);
+    assert.equal(dialed, false, suffix);
+  }
+});

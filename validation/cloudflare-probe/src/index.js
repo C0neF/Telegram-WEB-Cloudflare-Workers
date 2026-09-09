@@ -124,11 +124,15 @@ export class RelayProbe extends DurableObject {
     }
     if (pathname === '/probe/outbound-wss') {
       const rawDcId = Number(url.searchParams.get('dc') ?? '1');
+      const holdMs = parsePositiveInt(url.searchParams.get('holdMs'), 0);
+      if (!Number.isInteger(holdMs) || holdMs < 0 || holdMs > 60000) {
+        return new Response('holdMs must be between 0 and 60000', { status: 400 });
+      }
       try {
         const host = telegramHostForDc(rawDcId);
         const dial = this.env.__dialTelegram ?? dialTelegramWss;
         const result = await dial(host, {
-          holdMs: parsePositiveInt(url.searchParams.get('holdMs'), 0),
+          holdMs,
           timeoutMs: 10000,
         });
         return json(result);
@@ -139,8 +143,11 @@ export class RelayProbe extends DurableObject {
     if (pathname === '/probe/dials') {
       const count = parsePositiveInt(url.searchParams.get('count'), 1);
       const holdMs = parsePositiveInt(url.searchParams.get('holdMs'), 0);
-      if (count < 1 || count > 8) {
+      if (!Number.isInteger(count) || count < 1 || count > 8) {
         return new Response('count must be between 1 and 8', { status: 400 });
+      }
+      if (!Number.isInteger(holdMs) || holdMs < 0 || holdMs > 60000) {
+        return new Response('holdMs must be between 0 and 60000', { status: 400 });
       }
       const dial = this.env.__dialTelegram ?? dialTelegramWss;
       const results = await Promise.all(
@@ -166,7 +173,7 @@ export class RelayProbe extends DurableObject {
     if (pathname === '/probe/lifecycle/start') {
       const dcId = Number(url.searchParams.get('dc') ?? '1');
       const heartbeatMs = parsePositiveInt(url.searchParams.get('heartbeatMs'), 60000);
-      if (heartbeatMs < 1000 || heartbeatMs >= 70000) {
+      if (!Number.isInteger(heartbeatMs) || heartbeatMs < 1000 || heartbeatMs >= 70000) {
         return new Response('heartbeatMs must be between 1000 and 69999', { status: 400 });
       }
       if (this.lifecycle) {

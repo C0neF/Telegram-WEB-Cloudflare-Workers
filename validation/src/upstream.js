@@ -33,6 +33,7 @@ export async function readPinnedSource(repository, sourcePath) {
   const url = `https://raw.githubusercontent.com/${owner}/${commit}/${sourcePath}`;
   const response = await fetch(url, {
     headers: { 'User-Agent': 'Telegram-WEB-Proxy-validation/1.0' },
+    signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) throw new Error(`Unable to fetch pinned source: ${response.status} ${url}`);
   return response.text();

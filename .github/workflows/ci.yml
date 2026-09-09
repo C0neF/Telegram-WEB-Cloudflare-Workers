@@ -36,7 +36,4 @@ jobs:
         working-directory: validation
         run: npm test
       - name: Check syntax
-        run: |
-          npm --prefix app run lint
-          node --check validation/src/*.js
-          node --check validation/test/*.js
+        run: npm --prefix app run lint
